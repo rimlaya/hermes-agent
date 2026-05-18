@@ -61,6 +61,67 @@ def build_write_denied_prefixes(home: str) -> list[str]:
     ]
 
 
+def build_read_denied_paths(home: str) -> set[str]:
+    """Return exact sensitive paths that must never be READ at the tool layer.
+
+    Mirrors build_write_denied_paths so credentials cannot be exfiltrated
+    by handing the agent a path it shouldn't open, even if a prompt-
+    injection or unsafe skill tells it to. Policy/discipline is the
+    primary boundary; this is a defence-in-depth backstop.
+    """
+    hermes_home = _hermes_home_path()
+    return {
+        os.path.realpath(p)
+        for p in [
+            os.path.join(home, ".ssh", "id_rsa"),
+            os.path.join(home, ".ssh", "id_ed25519"),
+            os.path.join(home, ".ssh", "id_ecdsa"),
+            os.path.join(home, ".ssh", "id_dsa"),
+            str(hermes_home / ".env"),
+            os.path.join(home, ".netrc"),
+            os.path.join(home, ".pgpass"),
+            os.path.join(home, ".npmrc"),
+            os.path.join(home, ".pypirc"),
+            "/etc/shadow",
+            "/etc/sudoers",
+        ]
+    }
+
+
+def build_read_denied_prefixes(home: str) -> list[str]:
+    """Return sensitive directory prefixes that must never be READ.
+
+    Mirrors build_write_denied_prefixes. Any read inside these directories
+    is refused by the tool layer regardless of the specific filename.
+    """
+    return [
+        os.path.realpath(p) + os.sep
+        for p in [
+            os.path.join(home, ".ssh"),
+            os.path.join(home, ".aws"),
+            os.path.join(home, ".gnupg"),
+            os.path.join(home, ".kube"),
+            os.path.join(home, ".docker"),
+            os.path.join(home, ".azure"),
+            os.path.join(home, ".config", "gh"),
+            "/etc/sudoers.d",
+        ]
+    ]
+
+
+def is_read_denied(path: str) -> bool:
+    """Return True if path is blocked by the read denylist."""
+    home = os.path.realpath(os.path.expanduser("~"))
+    resolved = os.path.realpath(os.path.expanduser(str(path)))
+
+    if resolved in build_read_denied_paths(home):
+        return True
+    for prefix in build_read_denied_prefixes(home):
+        if resolved.startswith(prefix):
+            return True
+    return False
+
+
 def get_safe_write_root() -> Optional[str]:
     """Return the resolved HERMES_WRITE_SAFE_ROOT path, or None if unset."""
     root = os.getenv("HERMES_WRITE_SAFE_ROOT", "")

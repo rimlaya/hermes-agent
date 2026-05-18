@@ -8,7 +8,7 @@ import os
 import threading
 from pathlib import Path
 
-from agent.file_safety import get_read_block_error
+from agent.file_safety import get_read_block_error, is_read_denied
 from tools.binary_extensions import has_binary_extension
 from tools.file_operations import (
     ShellFileOperations,
@@ -470,6 +470,20 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = 
                 "error": (
                     f"Cannot read binary file '{path}' ({_ext}). "
                     "Use vision_analyze for images, or terminal to inspect binary files."
+                ),
+            })
+
+        # ── Credential read guard ─────────────────────────────────────
+        # Defence-in-depth backstop for the policy/discipline boundary:
+        # refuse reads of SSH keys, cloud creds, .netrc/.pgpass/.npmrc/
+        # .pypirc, /etc/shadow, and the dotfile dirs that hold them.
+        # Mirrors the write denylist in agent/file_safety.py.
+        if is_read_denied(str(_resolved)):
+            return json.dumps({
+                "error": (
+                    f"Cannot read '{path}': credential or secret-bearing "
+                    "path blocked at the tool layer. Ask the human if a "
+                    "specific value is genuinely needed."
                 ),
             })
 
