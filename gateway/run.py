@@ -1386,6 +1386,8 @@ class GatewayRunner:
 
         # Track background tasks to prevent garbage collection mid-execution
         self._background_tasks: set = set()
+        self._last_ack_at: Dict[str, float] = {}
+        self._async_agent_ack_ttl_seconds: float = self._resolve_async_agent_ack_dedup_seconds()
 
 
     def _wire_teams_pipeline_runtime(self) -> None:
@@ -6810,6 +6812,9 @@ class GatewayRunner:
                 return self._telegram_topic_root_lobby_message()
             return None
 
+        if self._should_async_agent_response(event):
+            return await self._start_async_agent_response(event, source, _quick_key)
+
         # ── Claim this session before any await ───────────────────────
         # Between here and _run_agent registering the real AIAgent, there
         # are numerous await points (hooks, vision enrichment, STT,
@@ -6865,6 +6870,206 @@ class GatewayRunner:
                 self._running_agents_ts.pop(_quick_key, None)
                 if hasattr(self, "_busy_ack_ts"):
                     self._busy_ack_ts.pop(_quick_key, None)
+
+    def _should_async_agent_response(self, event: MessageEvent) -> bool:
+        """Return True when normal agent work should ack now and finish later."""
+        if bool(getattr(event, "internal", False)):
+            return False
+        text = (getattr(event, "text", None) or "").strip()
+        if not text:
+            return False
+        if event.get_command():
+            return False
+
+        source = event.source
+        if source.platform not in {Platform.DISCORD, Platform.TELEGRAM, Platform.SLACK}:
+            return False
+
+        raw = os.getenv("HERMES_GATEWAY_ASYNC_AGENT_RESPONSE", "").strip().lower()
+        if raw:
+            return raw in {"1", "true", "yes", "on", "all"}
+
+        try:
+            cfg = _load_gateway_config()
+            gateway_cfg = cfg.get("gateway") if isinstance(cfg, dict) else {}
+            if isinstance(gateway_cfg, dict) and "async_agent_response" in gateway_cfg:
+                return is_truthy_value(gateway_cfg.get("async_agent_response"), default=False)
+        except Exception:
+            pass
+        return False
+
+    def _async_agent_ack_message(self, session_key: str) -> str:
+        raw = os.getenv("HERMES_GATEWAY_ASYNC_AGENT_ACK", "").strip()
+        if raw:
+            return raw
+        try:
+            cfg = _load_gateway_config()
+            gateway_cfg = cfg.get("gateway") if isinstance(cfg, dict) else {}
+            if isinstance(gateway_cfg, dict):
+                configured = str(gateway_cfg.get("async_agent_ack") or "").strip()
+                if configured:
+                    return configured
+        except Exception:
+            pass
+        return "受け取った。処理を続けて、終わったらここに返す。"
+
+    def _resolve_async_agent_ack_dedup_seconds(self) -> float:
+        raw = os.getenv("HERMES_GATEWAY_ASYNC_AGENT_ACK_DEDUP_SECONDS", "").strip()
+        if raw:
+            try:
+                return max(0.0, float(raw))
+            except ValueError:
+                logger.warning(
+                    "Ignoring invalid HERMES_GATEWAY_ASYNC_AGENT_ACK_DEDUP_SECONDS=%r",
+                    raw,
+                )
+
+        try:
+            cfg = _load_gateway_config()
+            gateway_cfg = cfg.get("gateway") if isinstance(cfg, dict) else {}
+            if isinstance(gateway_cfg, dict) and "async_agent_ack_dedup_seconds" in gateway_cfg:
+                return max(0.0, float(gateway_cfg.get("async_agent_ack_dedup_seconds")))
+        except (TypeError, ValueError):
+            logger.warning("Ignoring invalid gateway.async_agent_ack_dedup_seconds")
+        except Exception:
+            pass
+        return 60.0
+
+    async def _start_async_agent_response(
+        self,
+        event: MessageEvent,
+        source: SessionSource,
+        session_key: str,
+    ) -> str:
+        """Claim the session, run the agent later, and return a quick ack."""
+        self._running_agents[session_key] = _AGENT_PENDING_SENTINEL
+        self._running_agents_ts[session_key] = time.time()
+        run_generation = self._begin_session_run_generation(session_key)
+
+        task = asyncio.create_task(
+            self._run_async_agent_response(event, source, session_key, run_generation)
+        )
+        if not hasattr(self, "_background_tasks"):
+            self._background_tasks = set()
+        self._background_tasks.add(task)
+        task.add_done_callback(self._background_tasks.discard)
+        logger.info(
+            "async agent response scheduled: platform=%s chat=%s session=%s generation=%s",
+            source.platform.value if source.platform else "?",
+            source.chat_id or "unknown",
+            session_key,
+            run_generation,
+        )
+        ttl_seconds = getattr(self, "_async_agent_ack_ttl_seconds", 60.0)
+        if ttl_seconds > 0:
+            last_ack_at_by_session = getattr(self, "_last_ack_at", None)
+            if last_ack_at_by_session is None:
+                self._last_ack_at = {}
+                last_ack_at_by_session = self._last_ack_at
+            last_ack_at = last_ack_at_by_session.get(session_key, 0.0)
+            now = time.time()
+            if now - last_ack_at < ttl_seconds:
+                return ""
+            last_ack_at_by_session[session_key] = now
+        return self._async_agent_ack_message(session_key)
+
+    async def _run_async_agent_response(
+        self,
+        event: MessageEvent,
+        source: SessionSource,
+        session_key: str,
+        run_generation: int,
+    ) -> None:
+        """Background completion path for async-agent-response mode."""
+        response: Any = None
+        try:
+            response = await self._handle_message_with_agent(
+                event,
+                source,
+                session_key,
+                run_generation,
+            )
+            try:
+                final_text = ""
+                if isinstance(response, dict):
+                    final_text = str(response.get("final_response") or "")
+                elif isinstance(response, str):
+                    final_text = response
+                if final_text.strip():
+                    try:
+                        session_entry = self.session_store.get_or_create_session(source)
+                    except Exception:
+                        session_entry = None
+                    if session_entry is not None:
+                        await self._post_turn_goal_continuation(
+                            session_entry=session_entry,
+                            source=source,
+                            final_response=final_text,
+                        )
+            except Exception as goal_exc:
+                logger.debug("async goal continuation hook failed: %s", goal_exc)
+
+            if not response:
+                return
+            await self._deliver_async_agent_response(event, response)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("Async agent response failed for session %s", session_key)
+            try:
+                await self._deliver_async_agent_response(
+                    event,
+                    "Agent turn failed before a response could be delivered. Use /status or /retry.",
+                )
+            except Exception:
+                logger.debug("async failure notice delivery failed", exc_info=True)
+        finally:
+            if hasattr(self, "_last_ack_at"):
+                self._last_ack_at.pop(session_key, None)
+            if self._running_agents.get(session_key) is _AGENT_PENDING_SENTINEL:
+                self._release_running_agent_state(session_key)
+            else:
+                self._running_agents_ts.pop(session_key, None)
+                if hasattr(self, "_busy_ack_ts"):
+                    self._busy_ack_ts.pop(session_key, None)
+
+    async def _deliver_async_agent_response(self, event: MessageEvent, response: Any) -> None:
+        if isinstance(response, EphemeralReply):
+            response = str(response)
+        if not isinstance(response, str):
+            response = str(response)
+        if not response:
+            return
+
+        adapter = self.adapters.get(event.source.platform)
+        if not adapter:
+            logger.warning(
+                "Async agent response has no adapter for platform=%s",
+                event.source.platform.value if event.source.platform else "?",
+            )
+            return
+
+        metadata = self._thread_metadata_for_source(event.source, self._reply_anchor_for_event(event))
+        text = response
+        try:
+            if hasattr(adapter, "extract_media"):
+                _, text = adapter.extract_media(text)
+            if hasattr(adapter, "extract_images"):
+                _, text = adapter.extract_images(text)
+            if hasattr(adapter, "extract_local_files"):
+                _, text = adapter.extract_local_files(text)
+            text = text.replace("[[audio_as_voice]]", "").replace("[[as_document]]", "").strip()
+        except Exception:
+            text = response
+
+        if text:
+            await adapter.send(
+                event.source.chat_id,
+                text,
+                metadata=metadata,
+            )
+        if "MEDIA:" in response or "/" in response:
+            await self._deliver_media_from_response(response, event, adapter)
 
     async def _prepare_inbound_message_text(
         self,

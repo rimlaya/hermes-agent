@@ -1,6 +1,7 @@
 """Tests for gateway /status behavior and token persistence."""
 
 from datetime import datetime
+import asyncio
 import time
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -50,6 +51,9 @@ def _make_runner(session_entry: SessionEntry, *, platform: Platform = Platform.T
     runner.session_store.rewrite_transcript = MagicMock()
     runner.session_store.update_session = MagicMock()
     runner._running_agents = {}
+    runner._running_agents_ts = {}
+    runner._last_ack_at = {}
+    runner._async_agent_ack_ttl_seconds = 60.0
     runner._session_run_generation = {}
     runner._pending_messages = {}
     runner._pending_approvals = {}
@@ -172,6 +176,232 @@ async def test_status_command_tokens_zero_when_session_db_row_missing():
     result = await runner._handle_message(_make_event("/status"))
 
     assert "**Tokens:** 0" in result
+
+
+@pytest.mark.asyncio
+async def test_async_agent_response_ack_returns_before_final_send(monkeypatch):
+    session_key = build_session_key(_make_source(Platform.DISCORD))
+    session_entry = SessionEntry(
+        session_key=session_key,
+        session_id="sess-async",
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+        platform=Platform.DISCORD,
+        chat_type="dm",
+    )
+    runner = _make_runner(session_entry, platform=Platform.DISCORD)
+    runner._running_agents_ts = {}
+    runner._session_run_generation = {}
+    runner._background_tasks = set()
+    runner._last_ack_at = {}
+    runner._async_agent_ack_ttl_seconds = 60.0
+    runner._post_turn_goal_continuation = AsyncMock()
+    runner._thread_metadata_for_source = lambda *_args, **_kwargs: {"thread_id": "t1"}
+    runner._reply_anchor_for_event = lambda _event: "m1"
+
+    async def slow_agent_turn(*_args, **_kwargs):
+        await asyncio.sleep(0.05)
+        return "final response"
+
+    runner._handle_message_with_agent = slow_agent_turn
+
+    monkeypatch.setenv("HERMES_GATEWAY_ASYNC_AGENT_RESPONSE", "true")
+    monkeypatch.setenv("HERMES_GATEWAY_ASYNC_AGENT_ACK", "working")
+
+    result = await runner._handle_message(_make_event("hello", platform=Platform.DISCORD))
+
+    assert result == "working"
+    assert session_key in runner._running_agents
+    runner.adapters[Platform.DISCORD].send.assert_not_awaited()
+
+    task = next(iter(runner._background_tasks))
+    await asyncio.wait_for(task, timeout=1)
+
+    runner.adapters[Platform.DISCORD].send.assert_awaited_once_with(
+        "c1",
+        "final response",
+        metadata={"thread_id": "t1"},
+    )
+    assert session_key not in runner._running_agents
+    assert session_key not in runner._last_ack_at
+
+
+@pytest.mark.asyncio
+async def test_async_agent_response_ack_dedups_same_session_within_ttl(monkeypatch):
+    session_key = build_session_key(_make_source(Platform.DISCORD))
+    session_entry = SessionEntry(
+        session_key=session_key,
+        session_id="sess-async",
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+        platform=Platform.DISCORD,
+        chat_type="dm",
+    )
+    runner = _make_runner(session_entry, platform=Platform.DISCORD)
+    runner._background_tasks = set()
+    runner._post_turn_goal_continuation = AsyncMock()
+    runner._thread_metadata_for_source = lambda *_args, **_kwargs: {}
+    runner._reply_anchor_for_event = lambda _event: "m1"
+    release = asyncio.Event()
+
+    async def blocked_agent_turn(*_args, **_kwargs):
+        await release.wait()
+        return ""
+
+    runner._handle_message_with_agent = blocked_agent_turn
+    monkeypatch.setenv("HERMES_GATEWAY_ASYNC_AGENT_ACK", "working")
+
+    first = await runner._start_async_agent_response(
+        _make_event("one", platform=Platform.DISCORD),
+        _make_source(Platform.DISCORD),
+        session_key,
+    )
+    second = await runner._start_async_agent_response(
+        _make_event("two", platform=Platform.DISCORD),
+        _make_source(Platform.DISCORD),
+        session_key,
+    )
+
+    assert first == "working"
+    assert second == ""
+
+    release.set()
+    await asyncio.gather(*runner._background_tasks)
+
+
+@pytest.mark.asyncio
+async def test_async_agent_response_ack_repeats_after_ttl(monkeypatch):
+    session_key = build_session_key(_make_source(Platform.DISCORD))
+    session_entry = SessionEntry(
+        session_key=session_key,
+        session_id="sess-async",
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+        platform=Platform.DISCORD,
+        chat_type="dm",
+    )
+    runner = _make_runner(session_entry, platform=Platform.DISCORD)
+    runner._background_tasks = set()
+    runner._post_turn_goal_continuation = AsyncMock()
+    runner._thread_metadata_for_source = lambda *_args, **_kwargs: {}
+    runner._reply_anchor_for_event = lambda _event: "m1"
+    runner._last_ack_at[session_key] = 100.0
+    runner._handle_message_with_agent = AsyncMock(return_value="")
+    monkeypatch.setattr("gateway.run.time.time", lambda: 161.0)
+    monkeypatch.setenv("HERMES_GATEWAY_ASYNC_AGENT_ACK", "working")
+
+    result = await runner._start_async_agent_response(
+        _make_event("hello", platform=Platform.DISCORD),
+        _make_source(Platform.DISCORD),
+        session_key,
+    )
+
+    assert result == "working"
+    assert runner._last_ack_at[session_key] == 161.0
+    await asyncio.gather(*runner._background_tasks)
+
+
+@pytest.mark.asyncio
+async def test_async_agent_response_ack_reset_allows_next_message(monkeypatch):
+    session_key = build_session_key(_make_source(Platform.DISCORD))
+    session_entry = SessionEntry(
+        session_key=session_key,
+        session_id="sess-async",
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+        platform=Platform.DISCORD,
+        chat_type="dm",
+    )
+    runner = _make_runner(session_entry, platform=Platform.DISCORD)
+    runner._background_tasks = set()
+    runner._post_turn_goal_continuation = AsyncMock()
+    runner._thread_metadata_for_source = lambda *_args, **_kwargs: {"thread_id": "t1"}
+    runner._reply_anchor_for_event = lambda _event: "m1"
+    runner._deliver_media_from_response = AsyncMock()
+    runner._handle_message_with_agent = AsyncMock(return_value="final response")
+    monkeypatch.setenv("HERMES_GATEWAY_ASYNC_AGENT_ACK", "working")
+
+    first = await runner._start_async_agent_response(
+        _make_event("one", platform=Platform.DISCORD),
+        _make_source(Platform.DISCORD),
+        session_key,
+    )
+    await asyncio.gather(*runner._background_tasks)
+    runner._background_tasks = set()
+    second = await runner._start_async_agent_response(
+        _make_event("two", platform=Platform.DISCORD),
+        _make_source(Platform.DISCORD),
+        session_key,
+    )
+
+    assert first == "working"
+    assert second == "working"
+    await asyncio.gather(*runner._background_tasks)
+
+
+@pytest.mark.asyncio
+async def test_async_agent_response_ack_dedup_is_per_session(monkeypatch):
+    source_a = _make_source(Platform.DISCORD)
+    source_b = SessionSource(
+        platform=Platform.DISCORD,
+        user_id="u2",
+        chat_id="c2",
+        user_name="tester2",
+        chat_type="dm",
+    )
+    session_entry = SessionEntry(
+        session_key=build_session_key(source_a),
+        session_id="sess-async",
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+        platform=Platform.DISCORD,
+        chat_type="dm",
+    )
+    runner = _make_runner(session_entry, platform=Platform.DISCORD)
+    runner._background_tasks = set()
+    runner._post_turn_goal_continuation = AsyncMock()
+    runner._thread_metadata_for_source = lambda *_args, **_kwargs: {}
+    runner._reply_anchor_for_event = lambda _event: "m1"
+    release = asyncio.Event()
+
+    async def blocked_agent_turn(*_args, **_kwargs):
+        await release.wait()
+        return ""
+
+    runner._handle_message_with_agent = blocked_agent_turn
+    monkeypatch.setenv("HERMES_GATEWAY_ASYNC_AGENT_ACK", "working")
+
+    result_a = await runner._start_async_agent_response(
+        _make_event("one", platform=Platform.DISCORD),
+        source_a,
+        build_session_key(source_a),
+    )
+    result_b = await runner._start_async_agent_response(
+        MessageEvent(text="one", source=source_b, message_id="m2"),
+        source_b,
+        build_session_key(source_b),
+    )
+
+    assert result_a == "working"
+    assert result_b == "working"
+
+    release.set()
+    await asyncio.gather(*runner._background_tasks)
+
+
+def test_async_agent_response_disabled_for_slash_commands(monkeypatch):
+    session_entry = SessionEntry(
+        session_key=build_session_key(_make_source(Platform.DISCORD)),
+        session_id="sess-async",
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+        platform=Platform.DISCORD,
+        chat_type="dm",
+    )
+    runner = _make_runner(session_entry, platform=Platform.DISCORD)
+    monkeypatch.setenv("HERMES_GATEWAY_ASYNC_AGENT_RESPONSE", "true")
+
+    assert runner._should_async_agent_response(_make_event("/status", platform=Platform.DISCORD)) is False
 
 
 @pytest.mark.asyncio
