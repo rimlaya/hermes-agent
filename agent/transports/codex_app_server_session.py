@@ -24,12 +24,16 @@ call is synchronous and behaves like AIAgent's existing chat_completions loop.
 
 from __future__ import annotations
 
+import base64
 import logging
 import os
+import tempfile
 import threading
 import time
 from dataclasses import dataclass, field
-from typing import Any, Callable, Optional
+from pathlib import Path
+from typing import Any, Callable, Optional, Union
+from urllib.parse import unquote
 
 from agent.codex_responses_adapter import _format_responses_error
 from agent.redact import redact_sensitive_text
@@ -59,6 +63,120 @@ _HERMES_TO_CODEX_PERMISSION_PROFILE = {
     # Backstop alias used by some skills/tests.
     "yolo": "full-access",
 }
+
+
+def _materialize_data_url_for_vision(image_url: str) -> tuple[str, Path]:
+    """Materialize a data:image URL so Codex can read it as localImage."""
+    header, _, data = str(image_url or "").partition(",")
+    mime = "image/jpeg"
+    if header.startswith("data:"):
+        mime_part = header[len("data:"):].split(";", 1)[0].strip()
+        if mime_part.startswith("image/"):
+            mime = mime_part
+    suffix = {
+        "image/png": ".png",
+        "image/gif": ".gif",
+        "image/webp": ".webp",
+        "image/jpeg": ".jpg",
+        "image/jpg": ".jpg",
+    }.get(mime, ".jpg")
+    tmp = tempfile.NamedTemporaryFile(prefix="codex_image_", suffix=suffix, delete=False)
+    try:
+        with tmp:
+            tmp.write(base64.b64decode(data))
+    except Exception:
+        try:
+            os.unlink(tmp.name)
+        except OSError:
+            pass
+        raise
+    path = Path(tmp.name)
+    return str(path), path
+
+
+def _image_url_to_user_input(
+    image_url: Any,
+    *,
+    cleanup_paths: Optional[list[Path]] = None,
+) -> Optional[dict]:
+    if not isinstance(image_url, str) or not image_url:
+        return None
+    if image_url.startswith(("http://", "https://")):
+        return {"type": "image", "url": image_url}
+    if image_url.startswith("file://"):
+        return {"type": "localImage", "path": unquote(image_url[len("file://"):])}
+    if image_url.startswith("data:"):
+        path_str, path_obj = _materialize_data_url_for_vision(image_url)
+        if cleanup_paths is not None:
+            cleanup_paths.append(path_obj)
+        return {"type": "localImage", "path": path_str}
+    return None
+
+
+def _convert_to_user_inputs(
+    user_message: Union[str, list[dict]],
+    *,
+    cleanup_paths: Optional[list[Path]] = None,
+) -> list[dict]:
+    """Convert Hermes user content into Codex app-server v2 UserInput items."""
+    if isinstance(user_message, str):
+        return [{"type": "text", "text": user_message}]
+    if not isinstance(user_message, list) or not user_message:
+        return [{"type": "text", "text": "(empty)"}]
+
+    user_inputs: list[dict] = []
+    skipped_reasons: list[str] = []
+    for part in user_message:
+        if not isinstance(part, dict):
+            skipped_reasons.append(type(part).__name__)
+            continue
+
+        part_type = part.get("type")
+        if part_type == "text" and isinstance(part.get("text"), str):
+            user_inputs.append({"type": "text", "text": part["text"]})
+            continue
+
+        if part_type == "image_url":
+            image_url = part.get("image_url")
+            if isinstance(image_url, dict):
+                image_url = image_url.get("url")
+            try:
+                converted = _image_url_to_user_input(
+                    image_url,
+                    cleanup_paths=cleanup_paths,
+                )
+            except Exception:
+                logger.debug("failed to convert image_url content block", exc_info=True)
+                converted = None
+            if converted is not None:
+                user_inputs.append(converted)
+                continue
+            skipped_reasons.append("image_url")
+            continue
+
+        skipped_reasons.append(str(part_type or "unknown"))
+
+    if skipped_reasons:
+        unique_reasons = list(dict.fromkeys(skipped_reasons))
+        user_inputs.append(
+            {
+                "type": "text",
+                "text": (
+                    f"[note: skipped {len(skipped_reasons)} parts: "
+                    f"{', '.join(unique_reasons)}]"
+                ),
+            }
+        )
+
+    return user_inputs or [{"type": "text", "text": "(empty)"}]
+
+
+def _cleanup_paths(paths: list[Path]) -> None:
+    for path in paths:
+        try:
+            path.unlink(missing_ok=True)
+        except OSError:
+            logger.debug("failed to remove temporary codex image: %s", path, exc_info=True)
 
 
 @dataclass
@@ -365,15 +483,20 @@ class CodexAppServerSession:
 
     def run_turn(
         self,
-        user_input: Any,
+        user_input: Union[str, list[dict]],
         *,
         turn_timeout: float = 600.0,
         notification_poll_timeout: float = 0.25,
         post_tool_quiet_timeout: float = 90.0,
     ) -> TurnResult:
-        """Send a user message and block until turn/completed, while
-        forwarding server-initiated approval requests and projecting items
-        into Hermes' messages shape.
+        """Send user input and block until turn/completed.
+
+        user_input may be a plain text string or Hermes content blocks. Content
+        blocks are converted to Codex app-server v2 UserInput items before
+        `turn/start`, preserving supported image inputs.
+
+        While running, forwards server-initiated approval requests and projects
+        items into Hermes' messages shape.
 
         post_tool_quiet_timeout: if codex emits a tool completion and then
         goes quiet for this many seconds without emitting another item or
@@ -402,17 +525,19 @@ class CodexAppServerSession:
 
         self._interrupt_event.clear()
         projector = CodexEventProjector()
+        cleanup_paths: list[Path] = []
+        codex_user_input = _convert_to_user_inputs(
+            user_input,
+            cleanup_paths=cleanup_paths,
+        )
 
-        user_input_text = _coerce_turn_input_text(user_input)
-
-        # Send turn/start with the user input. Text-only for now (codex
-        # supports rich content but Hermes' text path is the common case).
+        # Send turn/start with Codex v2 UserInput items.
         try:
             ts = self._client.request(
                 "turn/start",
                 {
                     "threadId": self._thread_id,
-                    "input": [{"type": "text", "text": user_input_text}],
+                    "input": codex_user_input,
                 },
                 timeout=10,
             )
@@ -432,6 +557,7 @@ class CodexAppServerSession:
                 result.error = self._format_error_with_stderr(
                     "turn/start failed", exc
                 )
+            _cleanup_paths(cleanup_paths)
             return result
         except TimeoutError as exc:
             # turn/start hanging is a strong signal the subprocess is wedged.
@@ -441,6 +567,7 @@ class CodexAppServerSession:
                 "turn/start timed out", exc
             )
             result.should_retire = True
+            _cleanup_paths(cleanup_paths)
             return result
 
         result.turn_id = (ts.get("turn") or {}).get("id")
@@ -647,6 +774,7 @@ class CodexAppServerSession:
                 )
             result.should_retire = True
 
+        _cleanup_paths(cleanup_paths)
         return result
 
     def compact_thread(
