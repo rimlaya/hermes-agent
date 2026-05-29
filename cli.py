@@ -2703,10 +2703,8 @@ class HermesCLI:
         self.checkpoint_max_total_size_mb = cp_cfg.get("max_total_size_mb", 500)
         self.checkpoint_max_file_size_mb = cp_cfg.get("max_file_size_mb", 10)
         self.pass_session_id = pass_session_id
-        # --ignore-rules: honor either the constructor flag or the env var set
-        # by `hermes chat --ignore-rules` in hermes_cli/main.py. When true we
-        # pass skip_context_files=True and skip_memory=True to AIAgent so
-        # AGENTS.md/SOUL.md/.cursorrules and persistent memory are not loaded.
+        # Project context files are no longer auto-loaded by interactive CLI
+        # sessions. --ignore-rules still suppresses memory/user-config context.
         self.ignore_rules = ignore_rules or os.environ.get("HERMES_IGNORE_RULES") == "1"
         
         # Ephemeral system prompt: env var takes precedence, then config
@@ -4505,7 +4503,7 @@ class HermesCLI:
                 checkpoint_max_total_size_mb=self.checkpoint_max_total_size_mb,
                 checkpoint_max_file_size_mb=self.checkpoint_max_file_size_mb,
                 pass_session_id=self.pass_session_id,
-                skip_context_files=self.ignore_rules,
+                skip_context_files=True,
                 skip_memory=self.ignore_rules,
                 tool_progress_callback=self._on_tool_progress,
                 tool_start_callback=self._on_tool_start if self._inline_diffs_enabled else None,
@@ -5138,6 +5136,9 @@ class HermesCLI:
 
     def _handle_agents_command(self):
         """Handle /agents — show background processes and agent status."""
+        import time as _time
+        from agent.autonomy_control import format_autonomy_state, get_autonomy_state
+        from agent.codex_activity import format_age_short, list_recent_codex_activity
         from tools.process_registry import format_uptime_short, process_registry
 
         processes = process_registry.list_sessions()
@@ -5155,6 +5156,57 @@ class HermesCLI:
 
         agent_running = getattr(self, "_agent_running", False)
         _cprint(f"  Agent: {'running' if agent_running else 'idle'}")
+        _cprint(f"  Autonomy: {format_autonomy_state(get_autonomy_state())}")
+
+        codex_rows = list_recent_codex_activity(limit=5)
+        _cprint(f"  Recent Codex sessions: {len(codex_rows)}")
+        now = _time.time()
+        for row in codex_rows:
+            age = format_age_short(now - row.mtime)
+            name = Path(row.path).name
+            meta = []
+            if row.model:
+                meta.append(row.model)
+            if row.tool_calls:
+                meta.append(f"{row.tool_calls} tool calls")
+            if row.cwd:
+                meta.append(row.cwd)
+            suffix = f" · {' · '.join(meta)}" if meta else ""
+            _cprint(f"    {name} · updated {age} ago{suffix}")
+            if row.last_command:
+                _cprint(f"      last: {row.last_command}")
+
+    def _handle_autonomy_command(self, cmd: str):
+        """Handle /autonomy — record and report the user's autonomy state."""
+        from agent.autonomy_control import (
+            clear_autonomy,
+            format_autonomy_state,
+            get_autonomy_state,
+            pause_autonomy,
+            resume_autonomy,
+        )
+
+        parts = cmd.strip().split(maxsplit=2)
+        action = parts[1].lower() if len(parts) > 1 else "status"
+        reason = parts[2].strip() if len(parts) > 2 else ""
+
+        if action == "status":
+            _cprint(f"  Autonomy: {format_autonomy_state(get_autonomy_state())}")
+            return
+        if action == "pause":
+            state = pause_autonomy(reason)
+            _cprint(f"  Autonomy marked paused: {state.reason or 'paused'}")
+            _cprint("  New background work is still allowed; this is a visibility marker.")
+            return
+        if action == "resume":
+            resume_autonomy()
+            _cprint("  Autonomy resumed.")
+            return
+        if action == "clear":
+            clear_autonomy()
+            _cprint("  Autonomy marker cleared.")
+            return
+        _cprint("  Usage: /autonomy [status|pause|resume|clear] [reason]")
 
     def _handle_paste_command(self):
         """Handle /paste — explicitly check clipboard for an image.
@@ -7982,6 +8034,8 @@ class HermesCLI:
             self._handle_stop_command()
         elif canonical == "agents":
             self._handle_agents_command()
+        elif canonical == "autonomy":
+            self._handle_autonomy_command(cmd_original)
         elif canonical == "background":
             self._handle_background_command(cmd_original)
         elif canonical == "queue":
@@ -8156,6 +8210,8 @@ class HermesCLI:
             _cprint("  The task runs in a separate session and results display here when done.")
             return
 
+        from agent.autonomy_control import format_autonomy_state, get_autonomy_state, log_autonomy_event
+
         prompt = parts[1].strip()
         self._background_task_counter += 1
         task_num = self._background_task_counter
@@ -8165,6 +8221,16 @@ class HermesCLI:
         if not self._ensure_runtime_credentials():
             _cprint("  (>_<) Cannot start background task: no valid credentials.")
             return
+
+        log_autonomy_event(
+            "background_start",
+            surface="cli",
+            task_id=task_id,
+            objective=prompt,
+            autonomy_state=format_autonomy_state(get_autonomy_state()),
+            stop_condition="/stop",
+            session_id=task_id,
+        )
 
         _cprint(f"  🔄 Background task #{task_num} started: \"{prompt[:60]}{'...' if len(prompt) > 60 else ''}\"")
         _cprint(f"  Task ID: {task_id}")

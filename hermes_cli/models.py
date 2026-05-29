@@ -301,6 +301,7 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "MiniMax-M2",
     ],
     "anthropic": [
+        "claude-opus-4-8",
         "claude-opus-4-7",
         "claude-opus-4-6",
         "claude-sonnet-4-6",
@@ -1994,18 +1995,14 @@ def model_supports_fast_mode(model_id: Optional[str]) -> bool:
 def _is_anthropic_fast_model(model_id: Optional[str]) -> bool:
     """Return True if the model is a Claude model eligible for Anthropic Fast Mode.
 
-    Fast mode is currently supported on Claude Opus 4.6 only. Per Anthropic's
-    docs (https://platform.claude.com/docs/en/build-with-claude/fast-mode):
-    "Fast mode is currently supported on Opus 4.6 only. Sending speed: fast
-    with an unsupported model returns an error." Opus 4.7 explicitly rejects
-    the ``speed`` parameter with HTTP 400.
+    Fast mode is currently supported on Claude Opus 4.6 and 4.8. Unsupported
+    Claude models return an error when sent ``speed: "fast"``.
     """
     raw = _strip_vendor_prefix(str(model_id or ""))
     base = raw.split(":")[0]
     if not base.startswith("claude-"):
         return False
-    # Only Opus 4.6 supports fast mode at present.
-    return "opus-4-6" in base or "opus-4.6" in base
+    return any(v in base for v in ("opus-4-6", "opus-4.6", "opus-4-8", "opus-4.8"))
 
 
 def resolve_fast_mode_overrides(model_id: Optional[str]) -> dict[str, Any] | None:

@@ -74,23 +74,25 @@ ADAPTIVE_EFFORT_MAP = {
 # xhigh as a distinct level between high and max; older adaptive-thinking
 # models (4.6) reject it with a 400.  Keep this substring list in sync with
 # the Anthropic migration guide as new model families ship.
-_XHIGH_EFFORT_SUBSTRINGS = ("4-7", "4.7")
+_XHIGH_EFFORT_SUBSTRINGS = ("4-7", "4.7", "4-8", "4.8")
 
 # Models where extended thinking is deprecated/removed (4.6+ behavior: adaptive
 # is the only supported mode; 4.7 additionally forbids manual thinking entirely
 # and drops temperature/top_p/top_k).
-_ADAPTIVE_THINKING_SUBSTRINGS = ("4-6", "4.6", "4-7", "4.7")
+_ADAPTIVE_THINKING_SUBSTRINGS = ("4-6", "4.6", "4-7", "4.7", "4-8", "4.8")
 
 # Models where temperature/top_p/top_k return 400 if set to non-default values.
-# This is the Opus 4.7 contract; future 4.x+ models are expected to follow it.
-_NO_SAMPLING_PARAMS_SUBSTRINGS = ("4-7", "4.7")
-_FAST_MODE_SUPPORTED_SUBSTRINGS = ("opus-4-6", "opus-4.6")
+# This is the Opus 4.7+ contract; callers should omit these fields entirely.
+_NO_SAMPLING_PARAMS_SUBSTRINGS = ("4-7", "4.7", "4-8", "4.8")
+_FAST_MODE_SUPPORTED_SUBSTRINGS = ("opus-4-6", "opus-4.6", "opus-4-8", "opus-4.8")
 
 # ── Max output token limits per Anthropic model ───────────────────────
 # Source: Anthropic docs + Cline model catalog.  Anthropic's API requires
 # max_tokens as a mandatory field.  Previously we hardcoded 16384, which
 # starves thinking-enabled models (thinking tokens count toward the limit).
 _ANTHROPIC_OUTPUT_LIMITS = {
+    # Claude 4.8
+    "claude-opus-4-8":   128_000,
     # Claude 4.7
     "claude-opus-4-7":   128_000,
     # Claude 4.6
@@ -231,10 +233,10 @@ def _forbids_sampling_params(model: str) -> bool:
 def _supports_fast_mode(model: str) -> bool:
     """Return True for models that support Anthropic Fast Mode (speed=fast).
 
-    Per Anthropic docs, fast mode is currently supported on Opus 4.6 only.
-    Sending ``speed: "fast"`` to any other Claude model (including Opus 4.7)
-    returns HTTP 400. This guard prevents silently 400'ing when stale config
-    or older callers leave fast mode enabled across a model upgrade.
+    Fast mode is currently supported on Claude Opus 4.6 and 4.8. Sending
+    ``speed: "fast"`` to unsupported Claude models returns HTTP 400. This
+    guard prevents silently 400'ing when stale config or older callers leave
+    fast mode enabled across a model upgrade.
     """
     return any(v in model for v in _FAST_MODE_SUPPORTED_SUBSTRINGS)
 
@@ -2058,10 +2060,9 @@ def build_anthropic_kwargs(
         for _sampling_key in ("temperature", "top_p", "top_k"):
             kwargs.pop(_sampling_key, None)
 
-    # ── Fast mode (Opus 4.6 only) ────────────────────────────────────
+    # ── Fast mode (supported Opus versions only) ─────────────────────
     # Adds extra_body.speed="fast" + the fast-mode beta header for ~2.5x
-    # output speed. Per Anthropic docs, fast mode is only supported on
-    # Opus 4.6 — Opus 4.7 and other models 400 on the speed parameter.
+    # output speed. Unsupported Claude models 400 on the speed parameter.
     # Only for native Anthropic endpoints — third-party providers would
     # reject the unknown beta header and speed parameter.
     if (
@@ -2082,5 +2083,3 @@ def build_anthropic_kwargs(
         kwargs["extra_headers"] = {"anthropic-beta": ",".join(betas)}
 
     return kwargs
-
-

@@ -49,6 +49,7 @@ gateway:
     more:                  "... і ще {count}"
     running_processes:     "**Фонові процеси, що виконуються:** {count}"
     async_jobs:            "**Асинхронні задачі гейтвея:** {count}"
+    recent_codex:          "**Recent Codex sessions:** {count}"
     none:                  "Немає активних агентів або задач."
     state_starting:        "запускається"
     state_running:         "виконується"

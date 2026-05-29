@@ -5567,6 +5567,14 @@ class GatewayRunner:
             return True
 
         if getattr(source, "is_bot", False):
+            if source.platform == Platform.DISCORD:
+                try:
+                    from gateway.platforms.discord import _discord_trusted_agent_user_ids
+
+                    if str(source.user_id) in _discord_trusted_agent_user_ids():
+                        return True
+                except Exception:
+                    pass
             allow_bots_var = platform_allow_bots_map.get(source.platform)
             if allow_bots_var and os.getenv(allow_bots_var, "none").lower().strip() in {"mentions", "all"}:
                 return True
@@ -6546,6 +6554,9 @@ class GatewayRunner:
         if canonical == "agents":
             return await self._handle_agents_command(event)
 
+        if canonical == "autonomy":
+            return await self._handle_autonomy_command(event)
+
         if canonical == "platform":
             return await self._handle_platform_command(event)
 
@@ -7235,8 +7246,14 @@ class GatewayRunner:
             # is referencing. History can contain the same or similar text
             # multiple times, and without an explicit pointer the agent has to
             # guess (or answer for both subjects). Token overhead is minimal.
-            reply_snippet = event.reply_to_text[:500]
-            message_text = f'[Replying to: "{reply_snippet}"]\n\n{message_text}'
+            try:
+                max_reply_chars = int(os.getenv("GATEWAY_REPLY_CONTEXT_CHARS", "12000"))
+            except ValueError:
+                max_reply_chars = 12000
+            reply_text = event.reply_to_text
+            if max_reply_chars > 0 and len(reply_text) > max_reply_chars:
+                reply_text = reply_text[:max_reply_chars] + "\n[...reply context truncated by GATEWAY_REPLY_CONTEXT_CHARS...]"
+            message_text = f'[Replying to message_id={event.reply_to_message_id}:\n{reply_text}]\n\n{message_text}'
 
         if "@" in message_text:
             try:
@@ -8044,6 +8061,7 @@ class GatewayRunner:
             await self.hooks.emit("agent:end", {
                 **hook_ctx,
                 "response": (response or "")[:500],
+                "response_full": response or "",
             })
             
             # Check for pending process watchers (check_interval on background processes)
@@ -8891,6 +8909,8 @@ class GatewayRunner:
     async def _handle_agents_command(self, event: MessageEvent) -> str:
         """Handle /agents command - list active agents and running tasks."""
         from tools.process_registry import format_uptime_short, process_registry
+        from agent.autonomy_control import format_autonomy_state, get_autonomy_state
+        from agent.codex_activity import format_age_short, list_recent_codex_activity
 
         now = time.time()
         current_session_key = self._session_key_for_source(event.source)
@@ -8928,11 +8948,14 @@ class GatewayRunner:
             t for t in (getattr(self, "_background_tasks", set()) or set())
             if hasattr(t, "done") and not t.done()
         ]
+        autonomy_state = get_autonomy_state()
+        codex_rows = list_recent_codex_activity(limit=5)
 
         lines = [
             t("gateway.agents.header"),
             "",
             t("gateway.agents.active_agents", count=len(agent_rows)),
+            f"Autonomy: `{format_autonomy_state(autonomy_state)}`",
         ]
 
         if agent_rows:
@@ -8972,11 +8995,53 @@ class GatewayRunner:
             ]
         )
 
-        if not agent_rows and not running_processes and not background_tasks:
+        lines.extend(["", t("gateway.agents.recent_codex", count=len(codex_rows))])
+        for idx, row in enumerate(codex_rows, 1):
+            age = format_age_short(now - row.mtime)
+            path_name = Path(row.path).name
+            cwd = f" · cwd `{row.cwd}`" if row.cwd else ""
+            model = f" · `{row.model}`" if row.model else ""
+            tools = f" · tools {row.tool_calls}" if row.tool_calls else ""
+            lines.append(f"{idx}. `{path_name}` · updated {age} ago{model}{tools}{cwd}")
+            if row.last_command:
+                lines.append(f"   last: `{row.last_command}`")
+
+        if not agent_rows and not running_processes and not background_tasks and not codex_rows:
             lines.append("")
             lines.append(t("gateway.agents.none"))
 
         return "\n".join(lines)
+
+    async def _handle_autonomy_command(self, event: MessageEvent) -> str:
+        """Handle /autonomy — record and report the user's autonomy state."""
+        from agent.autonomy_control import (
+            clear_autonomy,
+            format_autonomy_state,
+            get_autonomy_state,
+            pause_autonomy,
+            resume_autonomy,
+        )
+
+        args = event.get_command_args().strip()
+        parts = args.split(maxsplit=1)
+        action = parts[0].lower() if parts else "status"
+        reason = parts[1].strip() if len(parts) > 1 else ""
+
+        if action == "status":
+            return f"Autonomy: `{format_autonomy_state(get_autonomy_state())}`"
+        if action == "pause":
+            state = pause_autonomy(reason)
+            return (
+                f"Autonomy marked paused: `{state.reason or 'paused'}`\n"
+                "New background work is still allowed; this is a visibility marker."
+            )
+        if action == "resume":
+            resume_autonomy()
+            return "Autonomy resumed."
+        if action == "clear":
+            clear_autonomy()
+            return "Autonomy marker cleared."
+        return "Usage: /autonomy [status|pause|resume|clear] [reason]"
 
     async def _handle_stop_command(self, event: MessageEvent) -> Union[str, EphemeralReply]:
         """Handle /stop command - interrupt a running agent.
@@ -10771,8 +10836,20 @@ class GatewayRunner:
         if not prompt:
             return t("gateway.background.usage")
 
+        from agent.autonomy_control import format_autonomy_state, get_autonomy_state, log_autonomy_event
+
         source = event.source
         task_id = f"bg_{datetime.now().strftime('%H%M%S')}_{os.urandom(3).hex()}"
+        log_autonomy_event(
+            "background_start",
+            surface="gateway",
+            task_id=task_id,
+            objective=prompt,
+            autonomy_state=format_autonomy_state(get_autonomy_state()),
+            stop_condition="/stop",
+            session_id=task_id,
+            source=f"{source.platform.value}:{source.chat_id}",
+        )
 
         event_message_id = self._reply_anchor_for_event(event)
 

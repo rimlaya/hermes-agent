@@ -49,6 +49,7 @@ gateway:
     more:                  "... e {count} altri"
     running_processes:     "**Processi in background in esecuzione:** {count}"
     async_jobs:            "**Job asincroni del gateway:** {count}"
+    recent_codex:          "**Recent Codex sessions:** {count}"
     none:                  "Nessun agente attivo o attività in esecuzione."
     state_starting:        "in avvio"
     state_running:         "in esecuzione"

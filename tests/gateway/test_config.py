@@ -501,6 +501,135 @@ class TestLoadGatewayConfig:
 
         assert os.environ.get("FEISHU_ALLOW_BOTS") == "none"
 
+    def test_bridges_discord_allow_bots_from_config_yaml_to_env(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "discord:\n  allow_bots: all\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.delenv("DISCORD_ALLOW_BOTS", raising=False)
+
+        load_gateway_config()
+
+        assert os.environ.get("DISCORD_ALLOW_BOTS") == "all"
+        os.environ.pop("DISCORD_ALLOW_BOTS", None)
+
+    def test_discord_allow_bots_env_takes_precedence_over_config_yaml(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "discord:\n  allow_bots: all\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setenv("DISCORD_ALLOW_BOTS", "none")
+
+        load_gateway_config()
+
+        assert os.environ.get("DISCORD_ALLOW_BOTS") == "none"
+
+    def test_bridges_discord_trusted_agent_require_mention_from_config_yaml_to_env(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "discord:\n  trusted_agent_require_mention: true\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.delenv("DISCORD_TRUSTED_AGENT_REQUIRE_MENTION", raising=False)
+
+        load_gateway_config()
+
+        assert os.environ.get("DISCORD_TRUSTED_AGENT_REQUIRE_MENTION") == "true"
+
+    def test_discord_trusted_agent_require_mention_env_takes_precedence_over_config_yaml(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "discord:\n  trusted_agent_require_mention: true\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setenv("DISCORD_TRUSTED_AGENT_REQUIRE_MENTION", "false")
+
+        load_gateway_config()
+
+        assert os.environ.get("DISCORD_TRUSTED_AGENT_REQUIRE_MENTION") == "false"
+
+    def test_bridges_discord_yomi_user_ids_from_config_yaml_to_env(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "discord:\n  yomi_user_ids:\n    - 1493785569602441337\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.delenv("DISCORD_YOMI_USER_IDS", raising=False)
+
+        load_gateway_config()
+
+        assert os.environ.get("DISCORD_YOMI_USER_IDS") == "1493785569602441337"
+
+    def test_bridges_discord_trusted_agent_user_ids_from_config_yaml_to_env(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "discord:\n  trusted_agent_user_ids:\n    - 1493785569602441337\n    - 1500372119744413817\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.delenv("DISCORD_TRUSTED_AGENT_USER_IDS", raising=False)
+
+        load_gateway_config()
+
+        assert os.environ.get("DISCORD_TRUSTED_AGENT_USER_IDS") == "1493785569602441337,1500372119744413817"
+
+    def test_discord_trusted_agent_user_ids_env_takes_precedence_over_config_yaml(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "discord:\n  trusted_agent_user_ids:\n    - 1493785569602441337\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setenv("DISCORD_TRUSTED_AGENT_USER_IDS", "none")
+
+        load_gateway_config()
+
+        assert os.environ.get("DISCORD_TRUSTED_AGENT_USER_IDS") == "none"
+
+    def test_discord_yomi_user_ids_env_takes_precedence_over_config_yaml(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "discord:\n  yomi_user_ids:\n    - 1493785569602441337\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setenv("DISCORD_YOMI_USER_IDS", "none")
+
+        load_gateway_config()
+
+        assert os.environ.get("DISCORD_YOMI_USER_IDS") == "none"
+
     def test_invalid_quick_commands_in_config_yaml_are_ignored(self, tmp_path, monkeypatch):
         hermes_home = tmp_path / ".hermes"
         hermes_home.mkdir()

@@ -1,14 +1,14 @@
 ---
-title: "Xurl — X/Twitter via xurl CLI: post, search, DM, media, v2 API"
+title: "Xurl — X/Twitter via xurl CLI: X API v2, post, search, DM, media, account actions"
 sidebar_label: "Xurl"
-description: "X/Twitter via xurl CLI: post, search, DM, media, v2 API"
+description: "X/Twitter via xurl CLI: X API v2, post, search, DM, media, account actions"
 ---
 
 {/* This page is auto-generated from the skill's SKILL.md by website/scripts/generate-skill-docs.py. Edit the source SKILL.md, not this page. */}
 
 # Xurl
 
-X/Twitter via xurl CLI: post, search, DM, media, v2 API.
+X/Twitter via xurl CLI: X API v2, post, search, DM, media, account actions.
 
 ## Skill metadata
 
@@ -31,6 +31,8 @@ The following is the complete skill definition that Hermes loads when this skill
 # xurl — X (Twitter) API via the Official CLI
 
 `xurl` is the X developer platform's official CLI for the X API. It supports shortcut commands for common actions AND raw curl-style access to any v2 endpoint. All commands return JSON to stdout.
+
+Use `xurl` for X API v2, raw/exact API search results, and authenticated account work. For broad public X search where a synthesized Grok answer with citations is acceptable, prefer Hermes `x_search`; `xurl` is the official X API CLI for reads, writes, raw JSON, and account-scoped actions.
 
 Use this skill for:
 - posting, replying, quoting, deleting posts

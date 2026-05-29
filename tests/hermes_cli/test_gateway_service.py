@@ -44,6 +44,7 @@ class TestSystemdServiceRefresh:
 
         monkeypatch.setattr(gateway_cli, "get_systemd_unit_path", lambda system=False: unit_path)
         monkeypatch.setattr(gateway_cli, "generate_systemd_unit", lambda system=False, run_as_user=None: "new unit\n")
+        monkeypatch.setattr(gateway_cli, "_preflight_user_systemd", lambda: None)
 
         calls = []
 
@@ -67,6 +68,7 @@ class TestSystemdServiceRefresh:
 
         monkeypatch.setattr(gateway_cli, "get_systemd_unit_path", lambda system=False: unit_path)
         monkeypatch.setattr(gateway_cli, "generate_systemd_unit", lambda system=False, run_as_user=None: "new unit\n")
+        monkeypatch.setattr(gateway_cli, "_preflight_user_systemd", lambda: None)
 
         calls = []
 
@@ -90,6 +92,7 @@ class TestSystemdServiceRefresh:
 
         monkeypatch.setattr(gateway_cli, "get_systemd_unit_path", lambda system=False: unit_path)
         monkeypatch.setattr(gateway_cli, "generate_systemd_unit", lambda system=False, run_as_user=None: "new unit\n")
+        monkeypatch.setattr(gateway_cli, "_preflight_user_systemd", lambda: None)
 
         calls = []
         monkeypatch.setattr("gateway.status.get_running_pid", lambda: None)
@@ -742,6 +745,7 @@ class TestGatewaySystemServiceRouting:
 
         monkeypatch.setattr(gateway_cli, "_select_systemd_scope", lambda system=False: False)
         monkeypatch.setattr(gateway_cli, "_require_service_installed", lambda action, system=False: None)
+        monkeypatch.setattr(gateway_cli, "_preflight_user_systemd", lambda: None)
         monkeypatch.setattr(gateway_cli, "refresh_systemd_unit_if_needed", lambda system=False: calls.append(("refresh", system)))
         monkeypatch.setattr(gateway_cli, "_get_restart_drain_timeout", lambda: 12.0)
         monkeypatch.setattr(
@@ -787,6 +791,7 @@ class TestGatewaySystemServiceRouting:
 
         monkeypatch.setattr(gateway_cli, "_select_systemd_scope", lambda system=False: False)
         monkeypatch.setattr(gateway_cli, "_require_service_installed", lambda action, system=False: None)
+        monkeypatch.setattr(gateway_cli, "_preflight_user_systemd", lambda: None)
         monkeypatch.setattr(gateway_cli, "refresh_systemd_unit_if_needed", lambda system=False: None)
         monkeypatch.setattr(gateway_cli, "_get_restart_drain_timeout", lambda: 10.0)
         monkeypatch.setattr("gateway.status.get_running_pid", lambda: None)
@@ -846,6 +851,7 @@ class TestGatewaySystemServiceRouting:
 
         monkeypatch.setattr(gateway_cli, "_select_systemd_scope", lambda system=False: False)
         monkeypatch.setattr(gateway_cli, "_require_service_installed", lambda action, system=False: None)
+        monkeypatch.setattr(gateway_cli, "_preflight_user_systemd", lambda: None)
         monkeypatch.setattr(gateway_cli, "refresh_systemd_unit_if_needed", lambda system=False: None)
         monkeypatch.setattr("gateway.status.get_running_pid", lambda: None)
         monkeypatch.setattr(gateway_cli, "_recover_pending_systemd_restart", lambda system=False, previous_pid=None: False)
@@ -876,6 +882,7 @@ class TestGatewaySystemServiceRouting:
     def test_systemd_restart_recovers_failed_planned_restart(self, monkeypatch, capsys):
         monkeypatch.setattr(gateway_cli, "_select_systemd_scope", lambda system=False: False)
         monkeypatch.setattr(gateway_cli, "_require_service_installed", lambda action, system=False: None)
+        monkeypatch.setattr(gateway_cli, "_preflight_user_systemd", lambda: None)
         monkeypatch.setattr(gateway_cli, "refresh_systemd_unit_if_needed", lambda system=False: None)
         monkeypatch.setattr(
             "gateway.status.read_runtime_status",
@@ -1608,6 +1615,20 @@ class TestProfileArg:
         monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
         result = gateway_cli._profile_arg(str(custom_home))
         assert result == ""
+
+    def test_custom_hermes_home_gets_hash_suffix(self, tmp_path, monkeypatch):
+        """Arbitrary custom HERMES_HOME gets an isolated service suffix."""
+        custom_home = tmp_path / "custom" / "hermes"
+        custom_home.mkdir(parents=True)
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: custom_home)
+
+        suffix = gateway_cli._profile_suffix()
+
+        assert suffix
+        assert len(suffix) == 8
+        assert gateway_cli.get_service_name() == f"hermes-gateway-{suffix}"
+        assert gateway_cli.get_launchd_label() == f"ai.hermes.gateway-{suffix}"
 
     def test_nested_profile_path_returns_empty(self, tmp_path, monkeypatch):
         """~/.hermes/profiles/mybot/subdir should NOT match — too deep."""

@@ -49,6 +49,7 @@ gateway:
     more:                  "... et {count} de plus"
     running_processes:     "**Processus d'arrière-plan en cours :** {count}"
     async_jobs:            "**Tâches asynchrones du gateway :** {count}"
+    recent_codex:          "**Recent Codex sessions:** {count}"
     none:                  "Aucun agent actif ni tâche en cours."
     state_starting:        "démarrage"
     state_running:         "en cours"

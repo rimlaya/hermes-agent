@@ -61,7 +61,7 @@ CONFIGURABLE_TOOLSETS = [
     ("video",           "🎬 Video Analysis",            "video_analyze (requires video-capable model)"),
     ("image_gen",       "🎨 Image Generation",          "image_generate"),
     ("video_gen",       "🎬 Video Generation",          "video_generate (text-to-video + image-to-video)"),
-    ("x_search",        "🐦 X (Twitter) Search",        "x_search (requires xAI OAuth or XAI_API_KEY)"),
+    ("x_search",        "🐦 X Search via Grok",          "broad public X search via Grok; raw/API/account work uses xurl"),
     ("moa",             "🧠 Mixture of Agents",         "mixture_of_agents"),
     ("tts",             "🔊 Text-to-Speech",            "text_to_speech"),
     ("skills",          "📚 Skills",                    "list, view, manage"),
@@ -91,7 +91,7 @@ CONFIGURABLE_TOOLSETS = [
 # X search is off by default for users without xAI credentials, but
 # auto-enables when SuperGrok OAuth tokens are stored OR XAI_API_KEY is
 # set — mirroring the HASS_TOKEN → homeassistant auto-enable below. The
-# `hermes tools` → X (Twitter) Search setup walks users through credential
+# `hermes tools` → X Search via Grok setup walks users through credential
 # setup. The tool's check_fn means the schema still won't appear to the
 # model if the credential later goes missing or expires.
 _DEFAULT_OFF_TOOLSETS = {"moa", "homeassistant", "spotify", "discord", "discord_admin", "video", "video_gen", "x_search"}
@@ -343,14 +343,16 @@ TOOL_CATEGORIES = {
         "providers": [],
     },
     "x_search": {
-        "name": "X (Twitter) Search",
+        "name": "X Search via Grok",
         "setup_title": "Select xAI Credential Source",
         "setup_note": (
-            "Hermes routes X searches through xAI's built-in x_search "
-            "Responses tool. Both credential sources hit the same "
-            "https://api.x.ai/v1/responses endpoint — pick whichever you "
-            "already have. SuperGrok OAuth is preferred when both are set "
-            "(uses your subscription quota instead of API spend)."
+            "Hermes routes this tool through xAI's built-in x_search "
+            "Responses tool for broad public X search with Grok citations. "
+            "Use xurl instead when you need raw/exact X API v2 search "
+            "results, account-scoped data, posting, DMs, timelines, follows, "
+            "media, or other X API actions. "
+            "Both credential sources hit the same https://api.x.ai/v1/responses "
+            "endpoint. SuperGrok OAuth is preferred when both are set."
         ),
         "icon": "🐦",
         "providers": [

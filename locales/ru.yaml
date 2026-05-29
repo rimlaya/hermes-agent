@@ -49,6 +49,7 @@ gateway:
     more:                  "... и ещё {count}"
     running_processes:     "**Выполняющиеся фоновые процессы:** {count}"
     async_jobs:            "**Асинхронные задачи шлюза:** {count}"
+    recent_codex:          "**Recent Codex sessions:** {count}"
     none:                  "Нет активных агентов или выполняющихся задач."
     state_starting:        "запускается"
     state_running:         "выполняется"

@@ -49,6 +49,7 @@ gateway:
     more:                  "... ve {count} tane daha"
     running_processes:     "**Çalışan arka plan süreçleri:** {count}"
     async_jobs:            "**Gateway asenkron işleri:** {count}"
+    recent_codex:          "**Recent Codex sessions:** {count}"
     none:                  "Aktif ajan veya çalışan görev yok."
     state_starting:        "başlatılıyor"
     state_running:         "çalışıyor"

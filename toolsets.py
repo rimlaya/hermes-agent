@@ -92,9 +92,11 @@ TOOLSETS = {
     "x_search": {
         "description": (
             "Search X (Twitter) posts and threads via xAI's built-in "
-            "x_search Responses tool. Available when xAI credentials are "
-            "configured (SuperGrok OAuth or XAI_API_KEY). Off by default; "
-            "enable in `hermes tools` → X (Twitter) Search."
+            "x_search Responses tool. Use this for broad public X search "
+            "with Grok citations. For raw/exact X API v2 search results or "
+            "account-scoped actions, use the xurl skill. Available when xAI credentials are configured "
+            "(SuperGrok OAuth or XAI_API_KEY). Off by default; enable in "
+            "`hermes tools` → X Search via Grok."
         ),
         "tools": ["x_search"],
         "includes": []

@@ -923,6 +923,35 @@ def load_gateway_config() -> GatewayConfig:
                     os.environ["DISCORD_AUTO_THREAD"] = str(discord_cfg["auto_thread"]).lower()
                 if "reactions" in discord_cfg and not os.getenv("DISCORD_REACTIONS"):
                     os.environ["DISCORD_REACTIONS"] = str(discord_cfg["reactions"]).lower()
+                if "allow_bots" in discord_cfg and not os.getenv("DISCORD_ALLOW_BOTS"):
+                    os.environ["DISCORD_ALLOW_BOTS"] = str(discord_cfg["allow_bots"]).lower()
+                if (
+                    "trusted_agent_require_mention" in discord_cfg
+                    and not os.getenv("DISCORD_TRUSTED_AGENT_REQUIRE_MENTION")
+                ):
+                    os.environ["DISCORD_TRUSTED_AGENT_REQUIRE_MENTION"] = str(
+                        discord_cfg["trusted_agent_require_mention"]
+                    ).lower()
+                trusted_agent_ids = discord_cfg.get("trusted_agent_user_ids")
+                if trusted_agent_ids is not None and not os.getenv("DISCORD_TRUSTED_AGENT_USER_IDS"):
+                    if isinstance(trusted_agent_ids, list):
+                        trusted_agent_ids = ",".join(str(v) for v in trusted_agent_ids)
+                    os.environ["DISCORD_TRUSTED_AGENT_USER_IDS"] = str(trusted_agent_ids)
+                trusted_agent_channels = discord_cfg.get("trusted_agent_channel_ids")
+                if trusted_agent_channels is None:
+                    trusted_agent_channels = discord_cfg.get("trusted_agent_channels")
+                if (
+                    trusted_agent_channels is not None
+                    and not os.getenv("DISCORD_TRUSTED_AGENT_CHANNEL_IDS")
+                ):
+                    if isinstance(trusted_agent_channels, list):
+                        trusted_agent_channels = ",".join(str(v) for v in trusted_agent_channels)
+                    os.environ["DISCORD_TRUSTED_AGENT_CHANNEL_IDS"] = str(trusted_agent_channels)
+                yomi_ids = discord_cfg.get("yomi_user_ids")
+                if yomi_ids is not None and not os.getenv("DISCORD_YOMI_USER_IDS"):
+                    if isinstance(yomi_ids, list):
+                        yomi_ids = ",".join(str(v) for v in yomi_ids)
+                    os.environ["DISCORD_YOMI_USER_IDS"] = str(yomi_ids)
                 # ignored_channels: channels where bot never responds (even when mentioned)
                 ic = discord_cfg.get("ignored_channels")
                 if ic is not None and not os.getenv("DISCORD_IGNORED_CHANNELS"):

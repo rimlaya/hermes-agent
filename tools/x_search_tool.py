@@ -355,9 +355,14 @@ X_SEARCH_SCHEMA = {
     "name": "x_search",
     "description": (
         "Search X (Twitter) posts, profiles, and threads using xAI's built-in "
-        "X Search tool. Use this for current discussion, reactions, or claims "
-        "on X rather than general web pages. Available when xAI credentials "
-        "are configured (SuperGrok OAuth or XAI_API_KEY)."
+        "X Search tool through the xAI Responses API. Use this for broad "
+        "public X search, current discussion, reactions, or claims when a "
+        "synthesized Grok answer with citations is wanted. Do not use this "
+        "for authenticated account actions, raw/exact X API v2 workflows, "
+        "posting, DMs, timelines, mentions, likes, follows, or media upload; "
+        "use the xurl skill/CLI for those. "
+        "Available when xAI credentials are configured (SuperGrok OAuth or "
+        "XAI_API_KEY)."
     ),
     "parameters": {
         "type": "object",

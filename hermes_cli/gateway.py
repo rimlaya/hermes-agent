@@ -1267,20 +1267,21 @@ def _profile_suffix() -> str:
     """
     import hashlib
     import re
-    from hermes_constants import get_default_hermes_root
     home = get_hermes_home().resolve()
-    default = get_default_hermes_root().resolve()
+    default = (Path.home() / ".hermes").resolve()
     if home == default:
         return ""
-    # Detect <root>/profiles/<name> pattern → use the profile name
-    profiles_root = (default / "profiles").resolve()
-    try:
-        rel = home.relative_to(profiles_root)
-        parts = rel.parts
-        if len(parts) == 1 and re.match(r"^[a-z0-9][a-z0-9_-]{0,63}$", parts[0]):
-            return parts[0]
-    except ValueError:
-        pass
+    # Detect <root>/.hermes/profiles/<name> pattern → use the profile name.
+    # Prefer path-shape detection because subprocess HOME may be profile-local
+    # (HERMES_HOME/home), which makes Path.home() unsuitable as the only root.
+    parts = home.parts
+    if (
+        len(parts) >= 3
+        and parts[-3] == ".hermes"
+        and parts[-2] == "profiles"
+        and re.match(r"^[a-z0-9][a-z0-9_-]{0,63}$", parts[-1])
+    ):
+        return parts[-1]
     # Fallback: short hash for arbitrary HERMES_HOME paths
     return hashlib.sha256(str(home).encode()).hexdigest()[:8]
 

@@ -1,15 +1,17 @@
 ---
-title: X (Twitter) Search
-description: Search X (Twitter) posts and threads from within the agent using xAI's built-in x_search Responses tool — works with either a SuperGrok OAuth login or an XAI_API_KEY.
-sidebar_label: X (Twitter) Search
+title: X Search via Grok
+description: Search broad public X (Twitter) posts and threads through xAI/Grok's built-in x_search Responses tool — works with either a SuperGrok OAuth login or an XAI_API_KEY.
+sidebar_label: X Search via Grok
 sidebar_position: 7
 ---
 
-# X (Twitter) Search
+# X Search via Grok
 
-The `x_search` tool lets the agent search X (Twitter) posts, profiles, and threads directly. It's backed by xAI's built-in `x_search` tool on the Responses API at `https://api.x.ai/v1/responses` — Grok itself runs the search server-side and returns synthesized results with citations to the originating posts.
+The `x_search` tool lets the agent search public X (Twitter) posts, profiles, and threads broadly. It's backed by xAI's built-in `x_search` tool on the Responses API at `https://api.x.ai/v1/responses` — Grok itself runs the search server-side and returns synthesized results with citations to the originating posts.
 
 **Use this instead of `web_search`** when you specifically want current discussion, reactions, or claims **on X**. For general web pages, keep using `web_search` / `web_extract`.
+
+Use `x_search` for broad public X search. Use the [`xurl` skill](../skills/bundled/social-media/social-media-xurl.md) only when you need raw/exact X API v2 search results or authenticated account actions such as posting, deleting posts, reading your timeline or mentions, DMs, likes, follows, bookmarks, or media upload.
 
 ## Authentication
 
@@ -30,7 +32,7 @@ Off by default. Enable in `hermes tools`:
 
 ```bash
 hermes tools
-# → 🐦 X (Twitter) Search   (press space to toggle on)
+# → 🐦 X Search via Grok   (press space to toggle on)
 ```
 
 The picker offers two credential choices:
@@ -107,7 +109,7 @@ The configured `x_search.model` doesn't have access to the server-side `x_search
 
 Two possible causes:
 
-1. **Toolset not enabled.** Run `hermes tools` and confirm `🐦 X (Twitter) Search` is checked.
+1. **Toolset not enabled.** Run `hermes tools` and confirm `🐦 X Search via Grok` is checked.
 2. **No xAI credentials.** The check_fn returns False, so the schema stays hidden. Run `hermes auth status` to confirm xai-oauth login state, and check that `XAI_API_KEY` is set (if you're using the API-key path).
 
 ## See Also

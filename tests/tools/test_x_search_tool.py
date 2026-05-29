@@ -1,4 +1,4 @@
-"""Tests for the X (Twitter) Search tool backed by xAI Responses API.
+"""Tests for the X Search via Grok tool backed by xAI Responses API.
 
 Covers:
 - HTTP request shape (URL, headers, payload, model from config)
@@ -436,3 +436,16 @@ def test_x_search_registered_in_registry_with_check_fn():
     assert entry.check_fn.__name__ == "check_x_search_requirements"
     assert "XAI_API_KEY" in entry.requires_env
     assert entry.emoji == "🐦"
+
+
+def test_x_search_schema_disambiguates_xurl_api_workflows():
+    """The model-facing description must not blur Grok search with X API actions."""
+    from tools.x_search_tool import X_SEARCH_SCHEMA
+
+    description = X_SEARCH_SCHEMA["description"]
+    assert "broad public X search" in description
+    assert "xAI Responses API" in description
+    assert "X API v2" in description
+    assert "xurl" in description
+    assert "posting" in description
+    assert "DMs" in description

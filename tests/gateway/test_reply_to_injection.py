@@ -55,7 +55,8 @@ async def test_reply_prefix_injected_when_text_absent_from_history():
 
     assert result is not None
     assert result.startswith(
-        '[Replying to: "Japan is great for culture, food, and efficiency."]'
+        "[Replying to message_id=42:\n"
+        "Japan is great for culture, food, and efficiency.]"
     )
     assert result.endswith("What's the best time to go?")
 
@@ -95,7 +96,7 @@ async def test_reply_prefix_still_injected_when_text_in_history():
     )
 
     assert result is not None
-    assert result.startswith(f'[Replying to: "{quoted}"]')
+    assert result.startswith(f"[Replying to message_id=42:\n{quoted}]")
     assert result.endswith("What's the best time to go?")
 
 
@@ -137,10 +138,11 @@ async def test_no_prefix_when_reply_to_text_is_empty():
 
 
 @pytest.mark.asyncio
-async def test_reply_snippet_truncated_to_500_chars():
+async def test_reply_context_truncated_by_configured_limit(monkeypatch):
     runner = _make_runner()
     source = _source()
     long_text = "x" * 800
+    monkeypatch.setenv("GATEWAY_REPLY_CONTEXT_CHARS", "500")
     event = MessageEvent(
         text="follow-up",
         source=source,
@@ -155,5 +157,6 @@ async def test_reply_snippet_truncated_to_500_chars():
     )
 
     assert result is not None
-    assert result.startswith('[Replying to: "' + "x" * 500 + '"]')
+    assert result.startswith("[Replying to message_id=42:\n" + "x" * 500)
+    assert "[...reply context truncated by GATEWAY_REPLY_CONTEXT_CHARS...]" in result
     assert "x" * 501 not in result

@@ -106,6 +106,15 @@ def test_normalize_usage_openai_prefers_prompt_tokens_details_over_top_level():
     assert normalized.cache_write_tokens == 150
 
 
+def test_anthropic_opus_4_8_pricing_uses_official_snapshot():
+    entry = get_pricing_entry("claude-opus-4-8", provider="anthropic")
+
+    assert float(entry.input_cost_per_million) == 5.0
+    assert float(entry.output_cost_per_million) == 25.0
+    assert float(entry.cache_read_cost_per_million) == 0.5
+    assert float(entry.cache_write_cost_per_million) == 6.25
+
+
 def test_openrouter_models_api_pricing_is_converted_from_per_token_to_per_million(monkeypatch):
     monkeypatch.setattr(
         "agent.usage_pricing.fetch_model_metadata",

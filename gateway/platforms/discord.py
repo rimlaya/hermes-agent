@@ -20,6 +20,7 @@ import tempfile
 import threading
 import time
 from collections import defaultdict
+from datetime import datetime, timezone
 from typing import Callable, Dict, List, Optional, Any, Tuple
 
 logger = logging.getLogger(__name__)
@@ -30,6 +31,13 @@ _DISCORD_COMMAND_SYNC_STATE_SUBDIR = "gateway"
 _DISCORD_COMMAND_SYNC_STATE_FILENAME = "discord_command_sync_state.json"
 _DISCORD_COMMAND_SYNC_MUTATION_INTERVAL_SECONDS = 4.5
 _DISCORD_COMMAND_SYNC_MAX_RATE_LIMIT_SLEEP_SECONDS = 30.0
+_DEFAULT_TRUSTED_AGENT_USER_IDS = frozenset({
+    "1493785569602441337",  # Yomi
+    "1500372119744413817",  # Sion
+})
+_DEFAULT_TRUSTED_AGENT_CHANNEL_IDS = frozenset({
+    "1507957383203389521",  # #mia-yomi-coord
+})
 
 try:
     import discord
@@ -76,13 +84,102 @@ def _clean_discord_id(entry: str) -> str:
     entry to just the bare ID or username.
     """
     entry = entry.strip()
-    # Strip Discord mention syntax: <@123> or <@!123>
+    # Strip Discord mention syntax: <@123>, <@!123>, or <#123>.
     if entry.startswith("<@") and entry.endswith(">"):
         entry = entry.lstrip("<@!").rstrip(">")
+    elif entry.startswith("<#") and entry.endswith(">"):
+        entry = entry.lstrip("<#").rstrip(">")
     # Strip "user:" prefix (seen in some Discord tools / onboarding pastes)
     if entry.lower().startswith("user:"):
         entry = entry[5:]
     return entry.strip()
+
+
+def _coerce_discord_id_set(value: Any) -> set[str]:
+    """Normalize a comma/list config value into Discord user IDs."""
+    if value is None:
+        return set()
+    if isinstance(value, str):
+        if value.strip().lower() in {"", "none", "false", "off"}:
+            return set()
+        entries = value.split(",")
+    elif isinstance(value, (list, tuple, set)):
+        entries = value
+    else:
+        entries = [value]
+    return {
+        _clean_discord_id(str(entry))
+        for entry in entries
+        if str(entry).strip()
+    }
+
+
+def _discord_trusted_agent_user_ids(config_extra: Optional[dict] = None) -> set[str]:
+    """Return bot IDs admitted as private-agent guidance messages."""
+    raw_env = os.getenv("DISCORD_TRUSTED_AGENT_USER_IDS")
+    if raw_env is not None:
+        return _coerce_discord_id_set(raw_env)
+    if isinstance(config_extra, dict) and "trusted_agent_user_ids" in config_extra:
+        return _coerce_discord_id_set(config_extra.get("trusted_agent_user_ids"))
+
+    # Backward compatibility for the earlier Yomi-only configuration.
+    raw_env = os.getenv("DISCORD_YOMI_USER_IDS")
+    if raw_env is not None:
+        return _coerce_discord_id_set(raw_env)
+    if isinstance(config_extra, dict) and "yomi_user_ids" in config_extra:
+        return _coerce_discord_id_set(config_extra.get("yomi_user_ids"))
+    return set(_DEFAULT_TRUSTED_AGENT_USER_IDS)
+
+
+def _discord_yomi_user_ids(config_extra: Optional[dict] = None) -> set[str]:
+    """Backward-compatible alias for older tests/plugins."""
+    return _discord_trusted_agent_user_ids(config_extra)
+
+
+def _discord_trusted_agent_require_mention(config_extra: Optional[dict] = None) -> bool:
+    """Return whether trusted-agent bot messages must explicitly mention us."""
+    if isinstance(config_extra, dict) and "trusted_agent_require_mention" in config_extra:
+        configured = config_extra.get("trusted_agent_require_mention")
+        if isinstance(configured, str):
+            return configured.lower() in {"true", "1", "yes", "on"}
+        return bool(configured)
+    return os.getenv("DISCORD_TRUSTED_AGENT_REQUIRE_MENTION", "false").lower() in {
+        "true",
+        "1",
+        "yes",
+        "on",
+    }
+
+
+def _discord_trusted_agent_channel_ids(config_extra: Optional[dict] = None) -> set[str]:
+    """Return channel IDs where trusted private-agent guidance is conversational."""
+    raw_env = os.getenv("DISCORD_TRUSTED_AGENT_CHANNEL_IDS")
+    if raw_env is not None:
+        return _coerce_discord_id_set(raw_env)
+    if isinstance(config_extra, dict):
+        for key in ("trusted_agent_channel_ids", "trusted_agent_channels"):
+            if key in config_extra:
+                return _coerce_discord_id_set(config_extra.get(key))
+    return set(_DEFAULT_TRUSTED_AGENT_CHANNEL_IDS)
+
+
+_TRUSTED_AGENT_DIRECT_ADDRESS_RE = re.compile(
+    r"^\s*(?:mia|ミア(?:ちゃん)?)(?=\s*[,，、:：])",
+    re.IGNORECASE,
+)
+
+
+def _trusted_agent_directly_addresses_mia(content: Any) -> bool:
+    """Return True when trusted-agent text is explicitly addressed to Mia."""
+    if not isinstance(content, str):
+        return False
+    return bool(_TRUSTED_AGENT_DIRECT_ADDRESS_RE.match(content))
+
+
+def _strip_trusted_agent_direct_address(content: str) -> str:
+    """Remove a leading textual Mia address from trusted-agent guidance."""
+    stripped = _TRUSTED_AGENT_DIRECT_ADDRESS_RE.sub("", content, count=1)
+    return stripped.lstrip(" \t,，、:：")
 
 
 def check_discord_requirements() -> bool:
@@ -582,6 +679,14 @@ class DiscordAdapter(BasePlatformAdapter):
         self._typing_tasks: Dict[str, asyncio.Task] = {}
         self._bot_task: Optional[asyncio.Task] = None
         self._post_connect_task: Optional[asyncio.Task] = None
+        self._liveness_task: Optional[asyncio.Task] = None
+        self._last_socket_event_at: float = 0.0
+        self._last_socket_event_name: str = ""
+        self._last_socket_opcode: Optional[int] = None
+        self._last_raw_message_at: float = 0.0
+        self._last_dispatched_message_at: float = 0.0
+        self._raw_message_events_seen: int = 0
+        self._dispatched_message_events_seen: int = 0
         # Dedup cache: prevents duplicate bot responses when Discord
         # RESUME replays events after reconnects.
         self._dedup = MessageDeduplicator()
@@ -593,6 +698,213 @@ class DiscordAdapter(BasePlatformAdapter):
         # history backfill to skip the full scan on hot paths.  Falls back to
         # scanning channel.history() on cache miss (cold start / restart).
         self._last_self_message_id: Dict[str, str] = {}
+        self._trusted_agent_user_ids: set[str] = _discord_trusted_agent_user_ids(self.config.extra)
+        self._trusted_agent_channel_ids: set[str] = _discord_trusted_agent_channel_ids(self.config.extra)
+        self._yomi_user_ids: set[str] = self._trusted_agent_user_ids
+
+    def _is_trusted_agent_guidance_message(self, message: Any) -> bool:
+        if not self._trusted_agent_user_ids:
+            return False
+        author = getattr(message, "author", None)
+        if not getattr(author, "bot", False):
+            return False
+        return str(getattr(author, "id", "")) in self._trusted_agent_user_ids
+
+    def _is_trusted_agent_coord_channel(self, message: Any) -> bool:
+        """Return True for dedicated private-agent coordination channels."""
+        if not self._trusted_agent_channel_ids:
+            return False
+        channel = getattr(message, "channel", None)
+        channel_ids = {str(getattr(channel, "id", ""))}
+        parent_id = getattr(channel, "parent_id", None)
+        if parent_id:
+            channel_ids.add(str(parent_id))
+        parent = getattr(channel, "parent", None)
+        if parent is not None:
+            channel_ids.add(str(getattr(parent, "id", "")))
+        return bool(channel_ids & self._trusted_agent_channel_ids)
+
+    def _is_yomi_guidance_message(self, message: Any) -> bool:
+        """Backward-compatible alias for older tests/plugins."""
+        return self._is_trusted_agent_guidance_message(message)
+
+    async def _reply_targets_client_user(self, message: Any) -> bool:
+        """Return True when a Discord reply points at this bot's own message."""
+        if not self._client or not self._client.user:
+            return False
+        reference = getattr(message, "reference", None)
+        if not reference:
+            return False
+        resolved = getattr(reference, "resolved", None)
+        if resolved is not None:
+            author = getattr(resolved, "author", None)
+            return (
+                author == self._client.user
+                or str(getattr(author, "id", "")) == str(self._client.user.id)
+            )
+        message_id = getattr(reference, "message_id", None)
+        if not message_id:
+            return False
+        try:
+            fetched = await message.channel.fetch_message(int(message_id))
+        except Exception:
+            logger.debug(
+                "[Discord] Could not fetch referenced message %s for trusted-agent loop check",
+                message_id,
+                exc_info=True,
+            )
+            return False
+        author = getattr(fetched, "author", None)
+        return (
+            author == self._client.user
+            or str(getattr(author, "id", "")) == str(self._client.user.id)
+        )
+
+    def _audit_trusted_agent_guidance(self, message: Any, action: str, reason: str) -> None:
+        """Append metadata-only audit rows for trusted-agent guidance handling."""
+        try:
+            from hermes_constants import get_hermes_home
+
+            control_dir = get_hermes_home() / "control"
+            control_dir.mkdir(parents=True, exist_ok=True)
+            reference = getattr(message, "reference", None)
+            guild = getattr(message, "guild", None)
+            channel = getattr(message, "channel", None)
+            author = getattr(message, "author", None)
+            row = {
+                "ts": datetime.now(timezone.utc).isoformat(),
+                "platform": "discord",
+                "event": "trusted_agent_guidance",
+                "action": action,
+                "reason": reason,
+                "author_user_id": str(getattr(author, "id", "")),
+                "message_id": str(getattr(message, "id", "")),
+                "reply_to_message_id": str(getattr(reference, "message_id", "") or ""),
+                "channel_id": str(getattr(channel, "id", "")),
+                "guild_id": str(getattr(guild, "id", "") or ""),
+            }
+            with (control_dir / "discord_trusted_agent_guidance_audit.jsonl").open(
+                "a",
+                encoding="utf-8",
+            ) as fh:
+                fh.write(json.dumps(row, ensure_ascii=False, separators=(",", ":")) + "\n")
+        except Exception:
+            logger.debug("[Discord] Failed to write trusted-agent guidance audit row", exc_info=True)
+
+    def _audit_yomi_guidance(self, message: Any, action: str, reason: str) -> None:
+        """Backward-compatible alias for older tests/plugins."""
+        self._audit_trusted_agent_guidance(message, action, reason)
+
+    def _discord_liveness_interval_seconds(self) -> float:
+        raw = os.getenv("HERMES_DISCORD_LIVENESS_INTERVAL_SECONDS", "300").strip()
+        try:
+            return max(30.0, float(raw))
+        except (TypeError, ValueError):
+            return 300.0
+
+    def _discord_liveness_enabled(self) -> bool:
+        raw = os.getenv("HERMES_DISCORD_LIVENESS_LOG", "true").strip().lower()
+        return raw not in {"0", "false", "no", "off"}
+
+    def _socket_age_seconds(self, now: Optional[float] = None) -> Optional[float]:
+        if not self._last_socket_event_at:
+            return None
+        return max(0.0, (now or time.monotonic()) - self._last_socket_event_at)
+
+    def _message_age_seconds(self, now: Optional[float] = None) -> Optional[float]:
+        if not self._last_raw_message_at:
+            return None
+        return max(0.0, (now or time.monotonic()) - self._last_raw_message_at)
+
+    @staticmethod
+    def _format_age(value: Optional[float]) -> str:
+        return "never" if value is None else f"{value:.0f}s"
+
+    def _record_socket_payload(self, payload: Any) -> None:
+        if not isinstance(payload, dict):
+            return
+        now = time.monotonic()
+        event_name = str(payload.get("t") or "")
+        opcode = payload.get("op")
+        try:
+            opcode_int = int(opcode) if opcode is not None else None
+        except (TypeError, ValueError):
+            opcode_int = None
+        self._last_socket_event_at = now
+        self._last_socket_event_name = event_name
+        self._last_socket_opcode = opcode_int
+
+        if event_name in {"READY", "RESUMED", "MESSAGE_CREATE"} or opcode_int in {7, 9, 10}:
+            logger.info(
+                "[Discord] Gateway payload: event=%s op=%s latency=%s",
+                event_name or "-",
+                opcode_int if opcode_int is not None else "-",
+                self._format_latency(),
+            )
+
+    def _format_latency(self) -> str:
+        client = self._client
+        latency = getattr(client, "latency", None) if client is not None else None
+        try:
+            if latency is None or latency < 0:
+                return "unknown"
+            return f"{float(latency) * 1000:.0f}ms"
+        except (TypeError, ValueError):
+            return "unknown"
+
+    def _log_liveness_snapshot(self, *, reason: str) -> None:
+        now = time.monotonic()
+        client = self._client
+        is_closed = None
+        is_ready = self._ready_event.is_set()
+        if client is not None:
+            try:
+                is_closed = client.is_closed()
+            except Exception:
+                is_closed = None
+        logger.info(
+            "[Discord] Liveness: reason=%s ready=%s closed=%s latency=%s "
+            "last_socket=%s event=%s op=%s last_message=%s raw_messages=%d "
+            "dispatched_messages=%d pending_batches=%d",
+            reason,
+            is_ready,
+            is_closed,
+            self._format_latency(),
+            self._format_age(self._socket_age_seconds(now)),
+            self._last_socket_event_name or "-",
+            self._last_socket_opcode if self._last_socket_opcode is not None else "-",
+            self._format_age(self._message_age_seconds(now)),
+            self._raw_message_events_seen,
+            self._dispatched_message_events_seen,
+            len(self._pending_text_batches),
+        )
+
+    def _start_liveness_monitor(self) -> None:
+        if not self._discord_liveness_enabled():
+            return
+        if self._liveness_task and not self._liveness_task.done():
+            return
+
+        async def _run() -> None:
+            interval = self._discord_liveness_interval_seconds()
+            try:
+                while True:
+                    await asyncio.sleep(interval)
+                    self._log_liveness_snapshot(reason="periodic")
+            except asyncio.CancelledError:
+                pass
+
+        self._liveness_task = asyncio.create_task(_run())
+
+    async def _stop_liveness_monitor(self) -> None:
+        task = self._liveness_task
+        self._liveness_task = None
+        if task and not task.done():
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
 
     async def connect(self) -> bool:
         """Connect to Discord and start receiving events."""
@@ -714,9 +1026,32 @@ class DiscordAdapter(BasePlatformAdapter):
                 adapter_self._post_connect_task = asyncio.create_task(
                     adapter_self._run_post_connect_initialization()
                 )
+                adapter_self._start_liveness_monitor()
+                adapter_self._log_liveness_snapshot(reason="ready")
+
+            @self._client.event
+            async def on_connect():
+                logger.info("[%s] Discord websocket connected", adapter_self.name)
+                adapter_self._log_liveness_snapshot(reason="connect")
+
+            @self._client.event
+            async def on_disconnect():
+                logger.warning("[%s] Discord websocket disconnected", adapter_self.name)
+                adapter_self._log_liveness_snapshot(reason="disconnect")
+
+            @self._client.event
+            async def on_resumed():
+                logger.warning("[%s] Discord websocket session resumed", adapter_self.name)
+                adapter_self._log_liveness_snapshot(reason="resumed")
+
+            @self._client.event
+            async def on_socket_response(payload):
+                adapter_self._record_socket_payload(payload)
 
             @self._client.event
             async def on_message(message: DiscordMessage):
+                adapter_self._raw_message_events_seen += 1
+                adapter_self._last_raw_message_at = time.monotonic()
                 # Block until _resolve_allowed_usernames has swapped
                 # any raw usernames in DISCORD_ALLOWED_USERS for numeric
                 # IDs (otherwise on_message's author.id lookup can miss).
@@ -746,15 +1081,47 @@ class DiscordAdapter(BasePlatformAdapter):
                 # Must run BEFORE the user allowlist check so that bots
                 # permitted by DISCORD_ALLOW_BOTS are not rejected for
                 # not being in DISCORD_ALLOWED_USERS (fixes #4466).
+                trusted_agent_guidance = False
                 if getattr(message.author, "bot", False):
-                    allow_bots = os.getenv("DISCORD_ALLOW_BOTS", "none").lower().strip()
-                    if allow_bots == "none":
-                        return
-                    elif allow_bots == "mentions":
-                        if not self._client.user or self._client.user not in message.mentions:
+                    trusted_agent_guidance = adapter_self._is_trusted_agent_guidance_message(message)
+                    if trusted_agent_guidance:
+                        trusted_agent_coord_channel = adapter_self._is_trusted_agent_coord_channel(message)
+                        directly_addressed = _trusted_agent_directly_addresses_mia(
+                            getattr(message, "content", "")
+                        )
+                        if (
+                            adapter_self._discord_trusted_agent_require_mention()
+                            and not trusted_agent_coord_channel
+                            and (
+                                (
+                                    not self._client.user
+                                    or self._client.user not in message.mentions
+                                )
+                                and not directly_addressed
+                            )
+                        ):
+                            adapter_self._audit_trusted_agent_guidance(
+                                message,
+                                "suppressed",
+                                "trusted_agent_requires_mention",
+                            )
                             return
-                    # "all" falls through; bot is permitted — skip the
-                    # human-user allowlist below (bots aren't in it).
+                        if await adapter_self._reply_targets_client_user(message):
+                            adapter_self._audit_trusted_agent_guidance(
+                                message,
+                                "suppressed",
+                                "reply_to_self_message",
+                            )
+                            return
+                    else:
+                        allow_bots = os.getenv("DISCORD_ALLOW_BOTS", "none").lower().strip()
+                        if allow_bots == "none":
+                            return
+                        elif allow_bots == "mentions":
+                            if not self._client.user or self._client.user not in message.mentions:
+                                return
+                        # "all" falls through; bot is permitted — skip the
+                        # human-user allowlist below (bots aren't in it).
                 else:
                     # Non-bot: enforce the configured user/role allowlists.
                     # Pass guild + is_dm so role checks are scoped to the
@@ -810,6 +1177,14 @@ class DiscordAdapter(BasePlatformAdapter):
                         if "*" not in _free_channels and not (_channel_ids & _free_channels):
                             return
 
+                if trusted_agent_guidance:
+                    adapter_self._audit_trusted_agent_guidance(
+                        message,
+                        "accepted",
+                        "allowed_trusted_agent_user",
+                    )
+                adapter_self._dispatched_message_events_seen += 1
+                adapter_self._last_dispatched_message_at = time.monotonic()
                 await self._handle_message(message)
 
             @self._client.event
@@ -888,6 +1263,7 @@ class DiscordAdapter(BasePlatformAdapter):
                 await self._post_connect_task
             except asyncio.CancelledError:
                 pass
+        await self._stop_liveness_monitor()
 
         self._running = False
         self._client = None
@@ -3564,6 +3940,10 @@ class DiscordAdapter(BasePlatformAdapter):
             return bool(configured)
         return os.getenv("DISCORD_REQUIRE_MENTION", "true").lower() not in {"false", "0", "no", "off"}
 
+    def _discord_trusted_agent_require_mention(self) -> bool:
+        """Return whether trusted-agent bot messages require a bot mention."""
+        return _discord_trusted_agent_require_mention(self.config.extra)
+
     def _discord_allow_any_attachment(self) -> bool:
         """Return whether Discord attachments bypass the SUPPORTED_DOCUMENT_TYPES allowlist.
 
@@ -4439,6 +4819,8 @@ class DiscordAdapter(BasePlatformAdapter):
         raw_content = message.content.strip()
         normalized_content = raw_content
         mention_prefix = False
+        trusted_agent_guidance = self._is_trusted_agent_guidance_message(message)
+        trusted_agent_coord_channel = trusted_agent_guidance and self._is_trusted_agent_coord_channel(message)
 
         snapshot_attachments = []
         if hasattr(message, "message_snapshots") and message.message_snapshots:
@@ -4455,6 +4837,26 @@ class DiscordAdapter(BasePlatformAdapter):
             normalized_content = normalized_content.replace(f"<@{self._client.user.id}>", "").strip()
             normalized_content = normalized_content.replace(f"<@!{self._client.user.id}>", "").strip()
             message.content = normalized_content
+        elif (
+            trusted_agent_guidance
+            and self._discord_trusted_agent_require_mention()
+            and _trusted_agent_directly_addresses_mia(normalized_content)
+        ):
+            mention_prefix = True
+            normalized_content = _strip_trusted_agent_direct_address(normalized_content)
+            message.content = normalized_content
+        if (
+            trusted_agent_guidance
+            and self._discord_trusted_agent_require_mention()
+            and not trusted_agent_coord_channel
+            and not mention_prefix
+        ):
+            self._audit_trusted_agent_guidance(
+                message,
+                "suppressed",
+                "trusted_agent_requires_mention",
+            )
+            return
         if not isinstance(message.channel, discord.DMChannel):
             channel_ids = {str(message.channel.id)}
             if parent_channel_id:
@@ -4502,7 +4904,12 @@ class DiscordAdapter(BasePlatformAdapter):
                 and not self._discord_thread_require_mention()
             )
 
-            if require_mention and not is_free_channel and not in_bot_thread:
+            if (
+                require_mention
+                and not is_free_channel
+                and not in_bot_thread
+                and not trusted_agent_guidance
+            ):
                 if self._client.user not in message.mentions and not mention_prefix:
                     return
         # Auto-thread: when enabled, automatically create a thread for every
@@ -4513,7 +4920,11 @@ class DiscordAdapter(BasePlatformAdapter):
         if not is_thread and not isinstance(message.channel, discord.DMChannel):
             no_thread_channels_raw = os.getenv("DISCORD_NO_THREAD_CHANNELS", "")
             no_thread_channels = {ch.strip() for ch in no_thread_channels_raw.split(",") if ch.strip()}
-            skip_thread = bool(channel_ids & no_thread_channels) or is_free_channel
+            skip_thread = (
+                bool(channel_ids & no_thread_channels)
+                or is_free_channel
+                or (trusted_agent_guidance and not mention_prefix)
+            )
             auto_thread = os.getenv("DISCORD_AUTO_THREAD", "true").lower() in {"true", "1", "yes"}
             is_reply_message = getattr(message, "type", None) == discord.MessageType.reply
             if auto_thread and not skip_thread and not is_voice_linked_channel and not is_reply_message:
@@ -4740,6 +5151,7 @@ class DiscordAdapter(BasePlatformAdapter):
                 require_mention
                 and not is_free_channel
                 and not in_bot_thread
+                and not trusted_agent_guidance
             )
             _backfill_enabled = self._discord_history_backfill()
             if _needed_mention and _backfill_enabled:
@@ -4766,8 +5178,25 @@ class DiscordAdapter(BasePlatformAdapter):
         reply_to_text = None
         if message.reference:
             reply_to_id = str(message.reference.message_id)
-            if message.reference.resolved:
-                reply_to_text = getattr(message.reference.resolved, "content", None) or None
+            resolved = getattr(message.reference, "resolved", None)
+            if resolved:
+                reply_to_text = getattr(resolved, "content", None) or None
+            # Discord.py does not always populate reference.resolved in gateway
+            # events.  For reply-driven agents, a missing quote is worse than a
+            # small REST fetch: the model may answer the wrong antecedent or see
+            # a truncated prompt snapshot.  Fetch the referenced message on
+            # demand so reply chains carry the original content whenever Discord
+            # still has it.
+            if not reply_to_text and reply_to_id:
+                try:
+                    fetched = await message.channel.fetch_message(int(reply_to_id))
+                    reply_to_text = getattr(fetched, "content", None) or None
+                except Exception:
+                    logger.debug(
+                        "[Discord] Could not fetch referenced message %s",
+                        reply_to_id,
+                        exc_info=True,
+                    )
 
         event = MessageEvent(
             text=event_text,

@@ -1117,8 +1117,19 @@ class TestBuildAnthropicKwargs:
         assert kwargs["thinking"] == {"type": "adaptive", "display": "summarized"}
         assert kwargs["output_config"] == {"effort": "max"}
 
-    def test_opus_4_7_strips_sampling_params(self):
-        # Opus 4.7 returns 400 on non-default temperature/top_p/top_k.
+    def test_reasoning_config_preserves_xhigh_for_4_8_models(self):
+        kwargs = build_anthropic_kwargs(
+            model="claude-opus-4-8",
+            messages=[{"role": "user", "content": "think harder"}],
+            tools=None,
+            max_tokens=4096,
+            reasoning_config={"enabled": True, "effort": "xhigh"},
+        )
+        assert kwargs["thinking"] == {"type": "adaptive", "display": "summarized"}
+        assert kwargs["output_config"] == {"effort": "xhigh"}
+
+    def test_opus_4_7_plus_strips_sampling_params(self):
+        # Opus 4.7+ returns 400 on non-default temperature/top_p/top_k.
         # build_anthropic_kwargs must strip them as a safety net even if an
         # upstream caller injects them for older-model compatibility.
         kwargs = build_anthropic_kwargs(
@@ -1134,14 +1145,17 @@ class TestBuildAnthropicKwargs:
         # calling the internal predicate directly.
         from agent.anthropic_adapter import _forbids_sampling_params
         assert _forbids_sampling_params("claude-opus-4-7") is True
+        assert _forbids_sampling_params("claude-opus-4-8") is True
         assert _forbids_sampling_params("claude-opus-4-6") is False
         assert _forbids_sampling_params("claude-sonnet-4-5") is False
 
     def test_supports_fast_mode_predicate(self):
-        """Fast mode is Opus 4.6 only — Opus 4.7 and others must be excluded."""
+        """Fast mode is Opus 4.6 and 4.8 only."""
         from agent.anthropic_adapter import _supports_fast_mode
         assert _supports_fast_mode("claude-opus-4-6") is True
         assert _supports_fast_mode("anthropic/claude-opus-4-6") is True
+        assert _supports_fast_mode("claude-opus-4-8") is True
+        assert _supports_fast_mode("anthropic/claude-opus-4-8") is True
         assert _supports_fast_mode("claude-opus-4-7") is False
         assert _supports_fast_mode("claude-sonnet-4-6") is False
         assert _supports_fast_mode("claude-haiku-4-5") is False

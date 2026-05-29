@@ -215,7 +215,7 @@ The single `video_generate` tool covers both modalities — pass `image_url` to 
 
 | Tool | Description | Requires environment |
 |------|-------------|----------------------|
-| `x_search` | Search X (Twitter) posts, profiles, and threads using xAI's built-in `x_search` Responses tool. Use this for current discussion, reactions, or claims on X rather than general web pages. Off by default — opt in via `hermes tools` → 🐦 X (Twitter) Search. Schema is only registered when xAI credentials are configured (check_fn-gated). | XAI_API_KEY **or** xAI Grok OAuth (SuperGrok Subscription) login |
+| `x_search` | Search broad public X (Twitter) posts, profiles, and threads using xAI's built-in `x_search` Responses tool. Use this for current discussion, reactions, or claims on X when a synthesized Grok answer with citations is wanted. Use `xurl` instead for raw/exact X API v2 search results, posting, DMs, timelines, follows, media, or other account-scoped API calls. Off by default — opt in via `hermes tools` → 🐦 X Search via Grok. Schema is only registered when xAI credentials are configured (check_fn-gated). | XAI_API_KEY **or** xAI Grok OAuth (SuperGrok Subscription) login |
 
 ## `tts` toolset
 
@@ -264,5 +264,3 @@ Registered only on the `hermes-yuanbao` platform toolset. Yuanbao is Tencent's c
 | `yb_send_dm` | Send a private/direct message to a user in a group, with optional media files. | Yuanbao credentials |
 | `yb_search_sticker` | Search the built-in Yuanbao sticker (TIM face) catalogue by keyword. | Yuanbao credentials |
 | `yb_send_sticker` | Send a built-in sticker to the current Yuanbao chat. | Yuanbao credentials |
-
-
