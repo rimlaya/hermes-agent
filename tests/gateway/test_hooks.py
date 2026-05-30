@@ -8,7 +8,7 @@ from unittest.mock import patch
 
 import pytest
 
-from gateway.builtin_hooks import startup_inbox
+from gateway.builtin_hooks import startup_inbox, startup_restart_finalize
 from gateway.hooks import HookRegistry
 
 
@@ -48,7 +48,15 @@ class TestDiscoverAndLoad:
             and hook["events"] == ["gateway:startup"]
             for hook in reg.loaded_hooks
         )
-        assert reg._handlers["gateway:startup"] == [startup_inbox.handle]
+        assert any(
+            hook["name"] == "restart-finalize-notice"
+            and hook["events"] == ["gateway:startup"]
+            for hook in reg.loaded_hooks
+        )
+        assert reg._handlers["gateway:startup"] == [
+            startup_inbox.handle,
+            startup_restart_finalize.handle,
+        ]
 
     def test_builtin_registration_is_idempotent(self, tmp_path):
         reg = HookRegistry()
@@ -61,7 +69,15 @@ class TestDiscoverAndLoad:
             if hook["name"] == "mia-startup-inbox-pickup"
         ]
         assert len(hooks) == 1
-        assert reg._handlers["gateway:startup"] == [startup_inbox.handle]
+        finalize_hooks = [
+            hook for hook in reg.loaded_hooks
+            if hook["name"] == "restart-finalize-notice"
+        ]
+        assert len(finalize_hooks) == 1
+        assert reg._handlers["gateway:startup"] == [
+            startup_inbox.handle,
+            startup_restart_finalize.handle,
+        ]
 
     def test_loads_valid_hook(self, tmp_path):
         _create_hook(tmp_path, "my-hook", '["agent:start"]',
