@@ -1566,7 +1566,6 @@ def _resolve_review_runtime(cfg: Dict[str, Any]) -> _ReviewRuntimeBinding:
     _main_provider = _main.get("provider") or "auto"
     _main_model = _main.get("default") or _main.get("model") or ""
 
-    # 1. Canonical aux task slot
     _aux = cfg.get("auxiliary", {}) if isinstance(cfg.get("auxiliary"), dict) else {}
     _cur_task = _aux.get("curator", {}) if isinstance(_aux.get("curator"), dict) else {}
     _task_provider = (_cur_task.get("provider") or "").strip() or None
@@ -1579,24 +1578,6 @@ def _resolve_review_runtime(cfg: Dict[str, Any]) -> _ReviewRuntimeBinding:
             _strip_aux_credential(_cur_task.get("base_url")),
         )
 
-    # 2. Legacy curator.auxiliary.{provider,model} (deprecated, pre-unification)
-    _cur = cfg.get("curator", {}) if isinstance(cfg.get("curator"), dict) else {}
-    _legacy = _cur.get("auxiliary", {}) if isinstance(_cur.get("auxiliary"), dict) else {}
-    _legacy_provider = _legacy.get("provider") or None
-    _legacy_model = _legacy.get("model") or None
-    if _legacy_provider and _legacy_model:
-        logger.info(
-            "curator: using deprecated curator.auxiliary.{provider,model} "
-            "config — please migrate to auxiliary.curator.{provider,model}"
-        )
-        return _ReviewRuntimeBinding(
-            str(_legacy_provider),
-            str(_legacy_model),
-            _strip_aux_credential(_legacy.get("api_key")),
-            _strip_aux_credential(_legacy.get("base_url")),
-        )
-
-    # 3. Fall through to the main chat model
     return _ReviewRuntimeBinding(_main_provider, _main_model, None, None)
 
 
@@ -1609,11 +1590,9 @@ def _resolve_review_model(cfg: Dict[str, Any]) -> tuple[str, str]:
     base_url,api_key,extra_body}``). ``provider: "auto"`` with an empty model
     means "use the main chat model" — same default as every other aux task.
 
-    Legacy fallback: users who configured ``curator.auxiliary.{provider,model}``
-    under the previous one-off schema still work. Precedence:
+    Precedence:
       1. ``auxiliary.curator.{provider,model}`` when both are set non-auto
-      2. Legacy ``curator.auxiliary.{provider,model}`` when both are set
-      3. Main ``model.{provider,default/model}`` pair
+      2. Main ``model.{provider,default/model}`` pair
     """
     b = _resolve_review_runtime(cfg)
     return b.provider, b.model
@@ -1657,8 +1636,7 @@ def _run_llm_review(prompt: str) -> Dict[str, Any]:
     #
     # `_resolve_review_runtime()` honors `auxiliary.curator.{provider,model,...}`
     # (canonical aux-task slot, wired through `hermes model` → auxiliary
-    # picker and the dashboard Models tab), with a legacy fallback to
-    # `curator.auxiliary.{provider,model,...}`. See docs/user-guide/features/curator.md.
+    # picker and the dashboard Models tab). See docs/user-guide/features/curator.md.
     _api_key = None
     _base_url = None
     _api_mode = None

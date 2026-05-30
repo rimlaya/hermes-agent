@@ -194,6 +194,92 @@ class TestDiscordBotFilter(unittest.IsolatedAsyncioTestCase):
             adapter._is_trusted_agent_guidance_message(_make_message(author=_make_author(bot=False)))
         )
 
+    def test_trusted_agent_work_gate_allows_answer_and_read_only(self):
+        """Answer/read-only guidance is never blocked by the work gate."""
+        from gateway.platforms.discord import _trusted_agent_work_gate_verdict
+
+        with patch.dict(os.environ, {}, clear=True):
+            self.assertEqual(_trusted_agent_work_gate_verdict("yes, this is stale")[0], "ALLOW")
+            self.assertEqual(_trusted_agent_work_gate_verdict("確認して status only")[0], "ALLOW")
+
+    def test_trusted_agent_work_gate_requires_pointer_for_action(self):
+        """Action-taking guidance needs an external-brain pointer."""
+        from gateway.platforms.discord import _trusted_agent_work_gate_verdict
+
+        with patch.dict(os.environ, {}, clear=True):
+            self.assertEqual(
+                _trusted_agent_work_gate_verdict("Mia, implement the gate now"),
+                ("NEEDS_TASK", "mutate"),
+            )
+            self.assertEqual(
+                _trusted_agent_work_gate_verdict("restart Mia gateway"),
+                ("NEEDS_EXPLICIT_GO", "restart"),
+            )
+            self.assertEqual(
+                _trusted_agent_work_gate_verdict("implement from Maestro task tsk-123abc"),
+                ("ALLOW", "mutate"),
+            )
+
+    def test_trusted_agent_work_gate_restart_pointer_still_needs_explicit_go(self):
+        """Pointers do not downgrade restart/auth/token/launchd safety gates."""
+        from gateway.platforms.discord import _trusted_agent_work_gate_verdict
+
+        with patch.dict(os.environ, {}, clear=True):
+            self.assertEqual(
+                _trusted_agent_work_gate_verdict("restart the mia gateway, see tsk-123456"),
+                ("NEEDS_EXPLICIT_GO", "restart"),
+            )
+            self.assertEqual(
+                _trusted_agent_work_gate_verdict("rotate the oauth token per tsk-abc123"),
+                ("NEEDS_EXPLICIT_GO", "restart"),
+            )
+
+    def test_trusted_agent_work_gate_denies_long_state_without_pointer(self):
+        """Long state dumps use concrete thresholds and must point outward."""
+        from gateway.platforms.discord import _trusted_agent_work_gate_verdict
+
+        body = "implement these changes\n" + "\n".join(f"- item {idx}" for idx in range(4))
+        with patch.dict(
+            os.environ,
+            {
+                "WORK_GATE_LONG_CHARS": "1000",
+                "WORK_GATE_LONG_LINES": "3",
+            },
+            clear=True,
+        ):
+            self.assertEqual(
+                _trusted_agent_work_gate_verdict(body),
+                ("DENY_LONG_DISCORD_STATE", "mutate"),
+            )
+
+    def test_trusted_agent_work_gate_kill_switch(self):
+        """Operators can bypass the gate immediately if it misfires."""
+        from gateway.platforms.discord import _trusted_agent_work_gate_verdict
+
+        with patch.dict(os.environ, {"WORK_GATE_DISABLED": "1"}, clear=True):
+            self.assertEqual(
+                _trusted_agent_work_gate_verdict("restart and edit everything without a task"),
+                ("ALLOW", "answer"),
+            )
+
+    def test_trusted_agent_work_gate_fail_open_for_answer_read_only(self):
+        """Classifier failures do not block answer/read-only traffic."""
+        import gateway.platforms.discord as discord_platform
+
+        with patch.dict(os.environ, {}, clear=True), patch.object(
+            discord_platform,
+            "_trusted_agent_work_gate_action",
+            side_effect=RuntimeError("boom"),
+        ):
+            self.assertEqual(
+                discord_platform._trusted_agent_work_gate_verdict("status check only"),
+                ("ALLOW", "read_only"),
+            )
+            self.assertEqual(
+                discord_platform._trusted_agent_work_gate_verdict("please patch this"),
+                ("NEEDS_TASK", "mutate"),
+            )
+
     async def test_trusted_agent_reply_to_self_is_suppressed(self):
         """Replies from trusted agents to Mia's own message are loop-suppressed."""
         from gateway.platforms.discord import DiscordAdapter
@@ -301,7 +387,8 @@ class TestDiscordBotFilter(unittest.IsolatedAsyncioTestCase):
         msg.type = discord.MessageType.default
         msg.reference = None
 
-        await adapter._handle_message(msg)
+        with patch.dict(os.environ, {}, clear=True):
+            await adapter._handle_message(msg)
 
         adapter.handle_message.assert_not_awaited()
         adapter._reply_targets_client_user.assert_not_awaited()
@@ -362,6 +449,48 @@ class TestDiscordBotFilter(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(event.text, "coordination update")
         self.assertTrue(event.source.is_bot)
         self.assertEqual(event.source.chat_id, "1507957383203389521")
+
+    async def test_trusted_agent_action_without_pointer_gets_visible_refusal(self):
+        """The Mia work gate refuses action requests without silently dropping them."""
+        import discord
+
+        from gateway.config import PlatformConfig
+        from gateway.platforms.discord import DiscordAdapter
+
+        adapter = DiscordAdapter(
+            PlatformConfig(
+                enabled=True,
+                token="test-token",
+                extra={"trusted_agent_channel_ids": ["1507957383203389521"]},
+            )
+        )
+        adapter._client = MagicMock()
+        adapter._client.user = _make_author(bot=True, is_self=True)
+        adapter._trusted_agent_user_ids = {"1493785569602441337"}
+        adapter._trusted_agent_channel_ids = {"1507957383203389521"}
+        adapter._audit_trusted_agent_guidance = MagicMock()
+        adapter.handle_message = AsyncMock()
+
+        author = _make_author(bot=True)
+        author.id = 1493785569602441337
+        author.display_name = "Yomi"
+        msg = _make_message(author=author, content="Mia, implement the gate now", mentions=[])
+        msg.channel.id = 1507957383203389521
+        msg.channel.send = AsyncMock()
+        msg.type = discord.MessageType.default
+        msg.reference = None
+
+        with patch.dict(os.environ, {}, clear=True):
+            await adapter._handle_message(msg)
+
+        adapter.handle_message.assert_not_awaited()
+        msg.channel.send.assert_awaited_once()
+        self.assertIn("needs a Maestro task", msg.channel.send.await_args.args[0])
+        adapter._audit_trusted_agent_guidance.assert_called_once()
+        self.assertEqual(
+            adapter._audit_trusted_agent_guidance.call_args.args[2],
+            "needs_task",
+        )
 
     async def test_trusted_agent_non_coord_channel_still_requires_mention(self):
         """The coordination-channel relaxation does not leak to other channels."""

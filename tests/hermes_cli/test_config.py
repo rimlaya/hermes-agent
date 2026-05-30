@@ -727,6 +727,79 @@ class TestDiscordChannelPromptsConfig:
         assert raw["discord"]["channel_prompts"] == {}
 
 
+class TestCuratorAuxiliaryConfigMigration:
+    def test_migrate_moves_legacy_curator_auxiliary_to_canonical_slot(self, tmp_path):
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(
+            yaml.safe_dump(
+                {
+                    "_config_version": 23,
+                    "model": {
+                        "provider": "openrouter",
+                        "default": "openai/gpt-5.5",
+                    },
+                    "curator": {
+                        "enabled": True,
+                        "auxiliary": {
+                            "provider": "custom",
+                            "model": "curator-mini",
+                            "base_url": "http://localhost:11434/v1",
+                            "api_key": "legacy-key",
+                            "timeout": 240,
+                        },
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            migrate_config(interactive=False, quiet=True)
+            raw = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+
+        from hermes_cli.config import DEFAULT_CONFIG
+        assert raw["_config_version"] == DEFAULT_CONFIG["_config_version"]
+        assert "auxiliary" not in raw["curator"]
+        assert raw["auxiliary"]["curator"]["provider"] == "custom"
+        assert raw["auxiliary"]["curator"]["model"] == "curator-mini"
+        assert raw["auxiliary"]["curator"]["base_url"] == "http://localhost:11434/v1"
+        assert raw["auxiliary"]["curator"]["api_key"] == "legacy-key"
+        assert raw["auxiliary"]["curator"]["timeout"] == 240
+
+    def test_migrate_keeps_existing_canonical_curator_slot(self, tmp_path):
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(
+            yaml.safe_dump(
+                {
+                    "_config_version": 23,
+                    "curator": {
+                        "auxiliary": {
+                            "provider": "legacy",
+                            "model": "legacy-model",
+                        },
+                    },
+                    "auxiliary": {
+                        "curator": {
+                            "provider": "canonical",
+                            "model": "canonical-model",
+                            "timeout": 123,
+                        },
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            migrate_config(interactive=False, quiet=True)
+            raw = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+
+        assert "auxiliary" not in raw["curator"]
+        assert raw["auxiliary"]["curator"]["provider"] == "canonical"
+        assert raw["auxiliary"]["curator"]["model"] == "canonical-model"
+        assert raw["auxiliary"]["curator"]["timeout"] == 123
+
+
 class TestUserMessagePreviewConfig:
     def test_default_config_preview_line_counts(self):
         preview = DEFAULT_CONFIG["display"]["user_message_preview"]

@@ -1645,7 +1645,7 @@ DEFAULT_CONFIG = {
     },
 
     # Config schema version - bump this when adding new required fields
-    "_config_version": 23,
+    "_config_version": 24,
 }
 
 # =============================================================================
@@ -3824,6 +3824,65 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
                     print(
                         "  ✓ Seeded auxiliary.curator defaults in config.yaml: "
                         f"{', '.join(added_aux)}"
+                    )
+
+    # ── Version 23 → 24: collapse legacy curator.auxiliary into auxiliary.curator ──
+    # Curator model routing now has one source of truth: `auxiliary.curator`.
+    # Preserve older explicit routing before the runtime stops reading the
+    # deprecated one-off `curator.auxiliary` block.
+    if current_ver < 24:
+        config = read_raw_config()
+        curator_cfg = config.get("curator")
+        legacy_aux = (
+            curator_cfg.get("auxiliary")
+            if isinstance(curator_cfg, dict)
+            and isinstance(curator_cfg.get("auxiliary"), dict)
+            else None
+        )
+        if legacy_aux:
+            aux_cfg = config.get("auxiliary")
+            if not isinstance(aux_cfg, dict):
+                aux_cfg = {}
+            target = aux_cfg.get("curator")
+            if not isinstance(target, dict):
+                target = {}
+
+            defaults = DEFAULT_CONFIG.get("auxiliary", {}).get("curator", {})
+
+            def _target_is_defaultish(key: str) -> bool:
+                if key not in target:
+                    return True
+                val = target.get(key)
+                if key == "provider":
+                    return val in (None, "", "auto")
+                if key in {"model", "base_url", "api_key"}:
+                    return val in (None, "")
+                return val == defaults.get(key)
+
+            migrated_keys: List[str] = []
+            for key in ("provider", "model", "base_url", "api_key", "timeout", "extra_body"):
+                if key in legacy_aux and _target_is_defaultish(key):
+                    target[key] = copy.deepcopy(legacy_aux[key])
+                    migrated_keys.append(key)
+
+            for key, value in defaults.items():
+                if key not in target:
+                    target[key] = copy.deepcopy(value)
+
+            aux_cfg["curator"] = target
+            config["auxiliary"] = aux_cfg
+
+            curator_cfg.pop("auxiliary", None)
+            config["curator"] = curator_cfg
+
+            save_config(config)
+            if migrated_keys:
+                results["config_added"].append(
+                    "auxiliary.curator (migrated from curator.auxiliary)"
+                )
+                if not quiet:
+                    print(
+                        "  ✓ Migrated curator.auxiliary config to auxiliary.curator"
                     )
 
     if current_ver < latest_ver and not quiet:

@@ -644,11 +644,9 @@ def test_cli_pin_refuses_bundled_skill(curator_env, capsys):
 # ---------------------------------------------------------------------------
 # curator review-model resolution (canonical auxiliary.curator slot)
 #
-# Curator was unified with the rest of the aux task system in Apr 2026 so
-# `hermes model` → auxiliary picker, the dashboard Models tab, and the full
-# per-task config (timeout, base_url, api_key, extra_body) all work for it.
-# Voscko report: curator.auxiliary.{provider,model} was advertised but never
-# read. Fix wires curator through auxiliary.curator with a legacy fallback.
+# Curator is unified with the rest of the aux task system, so `hermes model`
+# → auxiliary picker, the dashboard Models tab, and the full per-task config
+# (timeout, base_url, api_key, extra_body) all work through one canonical slot.
 # ---------------------------------------------------------------------------
 
 
@@ -741,27 +739,6 @@ def test_review_runtime_ignores_auxiliary_credentials_when_using_main(curator_en
     assert binding.explicit_base_url is None
 
 
-def test_review_runtime_legacy_auxiliary_carry_credentials(curator_env, caplog):
-    curator = curator_env["curator"]
-    cfg = {
-        "model": {"provider": "openrouter", "default": "openai/gpt-5.5"},
-        "curator": {
-            "auxiliary": {
-                "provider": "custom",
-                "model": "m",
-                "api_key": "legacy-key",
-                "base_url": "http://legacy/v1",
-            },
-        },
-    }
-    import logging
-    with caplog.at_level(logging.INFO, logger="agent.curator"):
-        binding = curator._resolve_review_runtime(cfg)
-    assert binding.explicit_api_key == "legacy-key"
-    assert binding.explicit_base_url == "http://legacy/v1"
-    assert any("deprecated curator.auxiliary" in rec.message for rec in caplog.records)
-
-
 def test_review_model_auxiliary_curator_partial_override_falls_back(curator_env):
     """Only one of slot provider/model set → fall back to the main pair.
 
@@ -788,11 +765,8 @@ def test_review_model_auxiliary_curator_partial_override_falls_back(curator_env)
     )
 
 
-def test_review_model_legacy_curator_auxiliary_still_works(curator_env, caplog):
-    """Pre-unification users set curator.auxiliary.{provider,model} — honor it.
-
-    Emits a deprecation log line but keeps their config working.
-    """
+def test_review_model_ignores_legacy_curator_auxiliary(curator_env):
+    """Only auxiliary.curator participates in curator model routing."""
     curator = curator_env["curator"]
     cfg = {
         "model": {"provider": "openrouter", "default": "openai/gpt-5.5"},
@@ -803,17 +777,11 @@ def test_review_model_legacy_curator_auxiliary_still_works(curator_env, caplog):
             },
         },
     }
-    import logging
-    with caplog.at_level(logging.INFO, logger="agent.curator"):
-        result = curator._resolve_review_model(cfg)
-    assert result == ("openrouter", "openai/gpt-5.4-mini")
-    assert any(
-        "deprecated curator.auxiliary" in rec.message for rec in caplog.records
-    ), "expected deprecation warning when legacy curator.auxiliary is used"
+    assert curator._resolve_review_model(cfg) == ("openrouter", "openai/gpt-5.5")
 
 
-def test_review_model_new_slot_wins_over_legacy(curator_env):
-    """When BOTH new and legacy are set, the canonical slot wins."""
+def test_review_model_canonical_slot_ignores_legacy_block(curator_env):
+    """When both are set, only the canonical slot participates."""
     curator = curator_env["curator"]
     cfg = {
         "model": {"provider": "openrouter", "default": "openai/gpt-5.5"},

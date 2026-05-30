@@ -6924,6 +6924,23 @@ class GatewayRunner:
             pass
         return "受け取った。処理を続けて、終わったらここに返す。"
 
+    def _async_agent_ack_enabled(self) -> bool:
+        raw = os.getenv("HERMES_GATEWAY_ASYNC_AGENT_ACK_ENABLED", "").strip()
+        if raw:
+            return is_truthy_value(raw, default=True)
+
+        try:
+            cfg = _load_gateway_config()
+            gateway_cfg = cfg.get("gateway") if isinstance(cfg, dict) else {}
+            if isinstance(gateway_cfg, dict) and "async_agent_ack_enabled" in gateway_cfg:
+                return is_truthy_value(
+                    gateway_cfg.get("async_agent_ack_enabled"),
+                    default=True,
+                )
+        except Exception:
+            pass
+        return True
+
     def _resolve_async_agent_ack_dedup_seconds(self) -> float:
         raw = os.getenv("HERMES_GATEWAY_ASYNC_AGENT_ACK_DEDUP_SECONDS", "").strip()
         if raw:
@@ -6971,6 +6988,8 @@ class GatewayRunner:
             session_key,
             run_generation,
         )
+        if not self._async_agent_ack_enabled():
+            return ""
         ttl_seconds = getattr(self, "_async_agent_ack_ttl_seconds", 60.0)
         if ttl_seconds > 0:
             last_ack_at_by_session = getattr(self, "_last_ack_at", None)

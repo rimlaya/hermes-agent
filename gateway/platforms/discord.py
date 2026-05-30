@@ -14,6 +14,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 import struct
 import subprocess
 import tempfile
@@ -38,6 +39,32 @@ _DEFAULT_TRUSTED_AGENT_USER_IDS = frozenset({
 _DEFAULT_TRUSTED_AGENT_CHANNEL_IDS = frozenset({
     "1507957383203389521",  # #mia-yomi-coord
 })
+_WORK_GATE_LONG_CHARS_DEFAULT = 1200
+_WORK_GATE_LONG_LINES_DEFAULT = 20
+_WORK_GATE_POINTER_RE = re.compile(
+    r"(?:\btsk-[0-9a-f]{6,}\b|\bmsg-[0-9a-f]{8}\b|"
+    r"\b[A-Z][A-Z0-9]+-\d+\b|(?:~|/Users/[^/\s]+)?/Vault/|"
+    r"\boutputs/(?:design|plans|projects|status|reports)/|\bLinear\b)",
+    re.IGNORECASE,
+)
+_WORK_GATE_READ_ONLY_RE = re.compile(
+    r"\b(?:read[-_ ]?only|inspect|check|確認|読む|見て|調査|status|review)\b",
+    re.IGNORECASE,
+)
+_WORK_GATE_RESTART_RE = re.compile(
+    r"\b(?:restart|reboot|launchctl|kickstart|token|auth|oauth|login|gateway switch|"
+    r"clean restart)\b|再起動|認証|トークン",
+    re.IGNORECASE,
+)
+_WORK_GATE_EXTERNAL_SYNC_RE = re.compile(
+    r"\b(?:linear sync|external_sync|external sync|sync linear|backfill|publish)\b",
+    re.IGNORECASE,
+)
+_WORK_GATE_MUTATE_RE = re.compile(
+    r"\b(?:implement|patch|edit|write|modify|apply|commit|merge|delete|prune|rotate|"
+    r"move|create|fix|run)\b|実装|変更|反映|削除|修正|書いて",
+    re.IGNORECASE,
+)
 
 try:
     import discord
@@ -56,7 +83,6 @@ from pathlib import Path as _Path
 sys.path.insert(0, str(_Path(__file__).resolve().parents[2]))
 
 from gateway.config import Platform, PlatformConfig
-import re
 
 from gateway.platforms.helpers import MessageDeduplicator, ThreadParticipationTracker
 from utils import atomic_json_write
@@ -180,6 +206,97 @@ def _strip_trusted_agent_direct_address(content: str) -> str:
     """Remove a leading textual Mia address from trusted-agent guidance."""
     stripped = _TRUSTED_AGENT_DIRECT_ADDRESS_RE.sub("", content, count=1)
     return stripped.lstrip(" \t,，、:：")
+
+
+def _work_gate_disabled() -> bool:
+    return os.getenv("WORK_GATE_DISABLED", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+
+def _work_gate_int_env(name: str, default: int) -> int:
+    raw = os.getenv(name, "").strip()
+    if not raw:
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        return default
+    return value if value > 0 else default
+
+
+def _trusted_agent_work_gate_action(content: Any) -> str:
+    """Classify trusted-agent guidance without consulting external state."""
+    if not isinstance(content, str) or not content.strip():
+        return "answer"
+    text = content.strip()
+    if _WORK_GATE_RESTART_RE.search(text):
+        return "restart"
+    if _WORK_GATE_EXTERNAL_SYNC_RE.search(text):
+        return "external_sync"
+    if _WORK_GATE_MUTATE_RE.search(text):
+        return "mutate"
+    if _WORK_GATE_READ_ONLY_RE.search(text):
+        return "read_only"
+    return "answer"
+
+
+def _trusted_agent_work_gate_has_pointer(content: Any) -> bool:
+    return isinstance(content, str) and bool(_WORK_GATE_POINTER_RE.search(content))
+
+
+def _trusted_agent_work_gate_is_long_state(content: Any) -> bool:
+    if not isinstance(content, str):
+        return False
+    max_chars = _work_gate_int_env("WORK_GATE_LONG_CHARS", _WORK_GATE_LONG_CHARS_DEFAULT)
+    max_lines = _work_gate_int_env("WORK_GATE_LONG_LINES", _WORK_GATE_LONG_LINES_DEFAULT)
+    return len(content) > max_chars or content.count("\n") + 1 > max_lines
+
+
+def _trusted_agent_work_gate_verdict(content: Any) -> tuple[str, str]:
+    """Return (verdict, action_type) for Mia trusted-agent intake.
+
+    The hot path is intentionally local: answer/read_only always fail open,
+    while action-taking requests need an explicit external-brain pointer.
+    """
+    try:
+        if _work_gate_disabled():
+            return "ALLOW", "answer"
+        action_type = _trusted_agent_work_gate_action(content)
+        if action_type in {"answer", "read_only"}:
+            return "ALLOW", action_type
+        if action_type == "restart":
+            return "NEEDS_EXPLICIT_GO", action_type
+        if _trusted_agent_work_gate_is_long_state(content) and not _trusted_agent_work_gate_has_pointer(content):
+            return "DENY_LONG_DISCORD_STATE", action_type
+        if not _trusted_agent_work_gate_has_pointer(content):
+            return "NEEDS_TASK", action_type
+        return "ALLOW", action_type
+    except Exception:
+        text = content.lower() if isinstance(content, str) else ""
+        action_type = "answer"
+        if any(token in text for token in ("restart", "launchctl", "token", "auth", "oauth", "login")):
+            action_type = "restart"
+        elif any(token in text for token in ("sync", "linear", "publish")):
+            action_type = "external_sync"
+        elif any(token in text for token in ("implement", "patch", "edit", "write", "apply", "commit", "delete", "fix", "run")):
+            action_type = "mutate"
+        elif any(token in text for token in ("read", "inspect", "check", "status", "review")):
+            action_type = "read_only"
+        if action_type in {"answer", "read_only"}:
+            return "ALLOW", action_type
+        return "NEEDS_TASK", action_type
+
+
+def _trusted_agent_work_gate_refusal(verdict: str, action_type: str) -> str:
+    if verdict == "DENY_LONG_DISCORD_STATE":
+        return "State update is too long for Discord intake. Put it in Maestro/Vault/Linear and send only the pointer."
+    if verdict == "NEEDS_EXPLICIT_GO":
+        return f"{action_type} needs a Maestro task plus explicit GO. Send the task/pointer first."
+    return f"{action_type} needs a Maestro task, Vault note, or Linear issue pointer before Mia acts."
 
 
 def check_discord_requirements() -> bool:
@@ -794,6 +911,22 @@ class DiscordAdapter(BasePlatformAdapter):
     def _audit_yomi_guidance(self, message: Any, action: str, reason: str) -> None:
         """Backward-compatible alias for older tests/plugins."""
         self._audit_trusted_agent_guidance(message, action, reason)
+
+    async def _refuse_trusted_agent_work_gate(
+        self,
+        message: Any,
+        verdict: str,
+        action_type: str,
+    ) -> None:
+        """Send a terse visible refusal so blocked guidance is not silently dropped."""
+        text = _trusted_agent_work_gate_refusal(verdict, action_type)
+        try:
+            await message.channel.send(text)
+        except Exception:
+            logger.warning(
+                "[Discord] Failed to send trusted-agent work-gate refusal",
+                exc_info=True,
+            )
 
     def _discord_liveness_interval_seconds(self) -> float:
         raw = os.getenv("HERMES_DISCORD_LIVENESS_INTERVAL_SECONDS", "300").strip()
@@ -4857,6 +4990,16 @@ class DiscordAdapter(BasePlatformAdapter):
                 "trusted_agent_requires_mention",
             )
             return
+        if trusted_agent_guidance:
+            verdict, action_type = _trusted_agent_work_gate_verdict(normalized_content)
+            if verdict != "ALLOW":
+                self._audit_trusted_agent_guidance(
+                    message,
+                    "suppressed",
+                    verdict.lower(),
+                )
+                await self._refuse_trusted_agent_work_gate(message, verdict, action_type)
+                return
         if not isinstance(message.channel, discord.DMChannel):
             channel_ids = {str(message.channel.id)}
             if parent_channel_id:

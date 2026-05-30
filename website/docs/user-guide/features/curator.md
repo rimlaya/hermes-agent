@@ -74,11 +74,7 @@ auxiliary:
     timeout: 600               # generous — reviews can take several minutes
 ```
 
-Leaving `provider: auto` (the default) routes the review pass through whatever your main chat model is, matching the behavior of every other auxiliary task.
-
-:::note Legacy config
-Earlier releases used a one-off `curator.auxiliary.{provider,model}` block. That path still works but emits a deprecation log line — please migrate to `auxiliary.curator` above so the curator shares the same plumbing (`hermes model`, dashboard Models tab, `base_url`, `api_key`, `timeout`, `extra_body`) as every other aux task.
-:::
+Leaving `provider: auto` (the default) routes the review pass through whatever your main chat model is, matching the behavior of every other auxiliary task. `auxiliary.curator` is the only supported model-routing config for curator.
 
 ## CLI
 

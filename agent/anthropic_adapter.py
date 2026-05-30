@@ -674,6 +674,11 @@ def _read_claude_code_credentials_from_keychain() -> Optional[Dict[str, Any]]:
     if platform.system() != "Darwin":
         return None
 
+    # Tests monkeypatch Path.home() to a temporary directory. In that isolated
+    # mode, never fall through to the operator's real macOS Keychain.
+    if Path.home() != Path(os.path.expanduser("~")):
+        return None
+
     try:
         # Read the "Claude Code-credentials" generic password entry
         result = subprocess.run(
@@ -690,6 +695,9 @@ def _read_claude_code_credentials_from_keychain() -> Optional[Dict[str, Any]]:
 
     if result.returncode != 0:
         logger.debug("Keychain: no entry found for 'Claude Code-credentials'")
+        return None
+
+    if not isinstance(result.stdout, str):
         return None
 
     raw = result.stdout.strip()

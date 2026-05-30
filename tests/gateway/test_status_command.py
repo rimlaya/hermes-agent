@@ -227,6 +227,69 @@ async def test_async_agent_response_ack_returns_before_final_send(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_async_agent_response_can_disable_ack_only(monkeypatch):
+    session_key = build_session_key(_make_source(Platform.DISCORD))
+    session_entry = SessionEntry(
+        session_key=session_key,
+        session_id="sess-async",
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+        platform=Platform.DISCORD,
+        chat_type="dm",
+    )
+    runner = _make_runner(session_entry, platform=Platform.DISCORD)
+    runner._running_agents_ts = {}
+    runner._session_run_generation = {}
+    runner._background_tasks = set()
+    runner._last_ack_at = {}
+    runner._async_agent_ack_ttl_seconds = 60.0
+    runner._post_turn_goal_continuation = AsyncMock()
+    runner._thread_metadata_for_source = lambda *_args, **_kwargs: {"thread_id": "t1"}
+    runner._reply_anchor_for_event = lambda _event: "m1"
+    runner._handle_message_with_agent = AsyncMock(return_value="final response")
+
+    monkeypatch.setenv("HERMES_GATEWAY_ASYNC_AGENT_RESPONSE", "true")
+    monkeypatch.setenv("HERMES_GATEWAY_ASYNC_AGENT_ACK", "working")
+    monkeypatch.setenv("HERMES_GATEWAY_ASYNC_AGENT_ACK_ENABLED", "false")
+
+    result = await runner._handle_message(_make_event("hello", platform=Platform.DISCORD))
+
+    assert result == ""
+    assert session_key in runner._running_agents
+    runner.adapters[Platform.DISCORD].send.assert_not_awaited()
+
+    task = next(iter(runner._background_tasks))
+    await asyncio.wait_for(task, timeout=1)
+
+    runner.adapters[Platform.DISCORD].send.assert_awaited_once_with(
+        "c1",
+        "final response",
+        metadata={"thread_id": "t1"},
+    )
+    assert session_key not in runner._running_agents
+    assert runner._last_ack_at == {}
+
+
+def test_async_agent_ack_enabled_reads_gateway_config(monkeypatch):
+    session_entry = SessionEntry(
+        session_key=build_session_key(_make_source(Platform.DISCORD)),
+        session_id="sess-async",
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+        platform=Platform.DISCORD,
+        chat_type="dm",
+    )
+    runner = _make_runner(session_entry, platform=Platform.DISCORD)
+    monkeypatch.delenv("HERMES_GATEWAY_ASYNC_AGENT_ACK_ENABLED", raising=False)
+    monkeypatch.setattr(
+        "gateway.run._load_gateway_config",
+        lambda: {"gateway": {"async_agent_ack_enabled": False}},
+    )
+
+    assert runner._async_agent_ack_enabled() is False
+
+
+@pytest.mark.asyncio
 async def test_async_agent_response_ack_dedups_same_session_within_ttl(monkeypatch):
     session_key = build_session_key(_make_source(Platform.DISCORD))
     session_entry = SessionEntry(
