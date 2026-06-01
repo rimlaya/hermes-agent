@@ -14372,9 +14372,23 @@ class GatewayRunner:
     def _evict_cached_agent(self, session_key: str) -> None:
         """Remove a cached agent for a session (called on /new, /model, etc)."""
         _lock = getattr(self, "_agent_cache_lock", None)
+        _evicted = None
         if _lock:
             with _lock:
-                self._agent_cache.pop(session_key, None)
+                _evicted = self._agent_cache.pop(session_key, None)
+        # Close the evicted agent's codex app-server session. Command-driven
+        # evictions (/model, /reasoning, /resume, /branch) reach here WITHOUT
+        # going through close()/release_clients(), so without this the
+        # per-instance _codex_session subprocess would orphan (leak). Closing
+        # is resume-safe: a rebuilt agent never inherits _codex_session — it
+        # lazily respawns one. Done outside the lock since close() may block;
+        # other resources are left to the existing cleanup/release paths.
+        _agent = _evicted[0] if isinstance(_evicted, tuple) else _evicted
+        if _agent is not None and _agent is not _AGENT_PENDING_SENTINEL:
+            try:
+                _agent.close_codex_session()
+            except Exception:
+                pass
 
     @staticmethod
     def _init_cached_agent_for_turn(agent: Any, interrupt_depth: int) -> None:
