@@ -35,6 +35,7 @@ from urllib.parse import urlparse, parse_qs, urlunparse
 
 from hermes_cli.timeouts import get_provider_request_timeout
 from agent.error_classifier import classify_api_error, FailoverReason
+from agent.failping import failping
 from agent.model_metadata import is_local_endpoint
 from agent.message_sanitization import (
     _sanitize_surrogates,
@@ -1735,6 +1736,12 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                             mid_tool_call=True,
                             diag=request_client_holder.get("diag"),
                         )
+                        failping(
+                            logger,
+                            component="api_stream_mid_tool",
+                            signature=e.__class__.__name__,
+                            error=e,
+                        )
                         stale = request_client_holder.get("client")
                         if stale is not None:
                             agent._close_request_openai_client(
@@ -1789,6 +1796,12 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                                 max_attempts=_max_stream_retries + 1,
                                 mid_tool_call=False,
                                 diag=request_client_holder.get("diag"),
+                            )
+                            failping(
+                                logger,
+                                component="api_stream",
+                                signature=e.__class__.__name__,
+                                error=e,
                             )
                             # Close the stale request client before retry
                             stale = request_client_holder.get("client")

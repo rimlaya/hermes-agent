@@ -25,6 +25,7 @@ from typing import Any, Dict, List, Optional
 
 from agent.auxiliary_client import call_llm, _is_connection_error
 from agent.context_engine import ContextEngine
+from agent.failping import failping
 from agent.model_metadata import (
     MINIMUM_CONTEXT_LENGTH,
     get_model_context_length,
@@ -884,6 +885,12 @@ class ContextCompressor(ContextEngine):
         "timed out", "returned invalid JSON", "failed") that is interpolated
         into the warning log.
         """
+        failping(
+            logger,
+            component="compression_fallback",
+            signature=reason,
+            error=e,
+        )
         self._summary_model_fallen_back = True
         logging.warning(
             "Summary model '%s' %s (%s). "
@@ -1072,6 +1079,12 @@ The user has requested that this compaction PRIORITISE preserving all informatio
             return self._with_summary_prefix(summary)
         except RuntimeError:
             # No provider configured — long cooldown, unlikely to self-resolve
+            failping(
+                logger,
+                component="compression_summary",
+                signature="no_provider",
+                msg="no auxiliary LLM provider configured",
+            )
             self._summary_failure_cooldown_until = time.monotonic() + _SUMMARY_FAILURE_COOLDOWN_SECONDS
             self._last_summary_error = "no auxiliary LLM provider configured"
             logging.warning("Context compression: no provider available for "
@@ -1175,6 +1188,12 @@ The user has requested that this compaction PRIORITISE preserving all informatio
                 "Further summary attempts paused for %d seconds.",
                 e,
                 _transient_cooldown,
+            )
+            failping(
+                logger,
+                component="compression_summary",
+                signature=e.__class__.__name__,
+                error=e,
             )
             return None
 

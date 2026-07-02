@@ -22,6 +22,8 @@ import os
 from types import SimpleNamespace
 from typing import Any, Dict, List
 
+from agent.failping import failping
+
 logger = logging.getLogger(__name__)
 
 
@@ -267,6 +269,12 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
                 return final_response
         except (_httpx.RemoteProtocolError, _httpx.ReadTimeout, _httpx.ConnectError, ConnectionError) as exc:
             if attempt < max_stream_retries:
+                failping(
+                    logger,
+                    component="codex_responses_stream",
+                    signature=exc.__class__.__name__,
+                    error=exc,
+                )
                 logger.debug(
                     "Codex Responses stream transport failed (attempt %s/%s); retrying. %s error=%s",
                     attempt + 1,
@@ -312,6 +320,12 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
                 or "Expected to have received \"response.created\"" in err_text
             )
             if (missing_completed or prelude_error) and attempt < max_stream_retries:
+                failping(
+                    logger,
+                    component="codex_responses_stream",
+                    signature="prelude_rejected" if prelude_error else "missing_completed",
+                    error=exc,
+                )
                 logger.debug(
                     "Responses stream %s (attempt %s/%s); retrying. %s",
                     "prelude rejected" if prelude_error else "closed before completion",
