@@ -14,6 +14,7 @@ from hermes_cli.tools_config import (
     _reconfigure_tool,
     _save_platform_tools,
     _toolset_has_keys,
+    _xai_credentials_present,
     CONFIGURABLE_TOOLSETS,
     TOOL_CATEGORIES,
     _visible_providers,
@@ -163,6 +164,34 @@ def test_get_platform_tools_x_search_off_when_no_xai_credentials(monkeypatch):
 
     cli_enabled = _get_platform_tools({}, "cli")
     assert "x_search" not in cli_enabled
+
+
+def test_get_platform_tools_x_search_off_when_oauth_access_token_expired(monkeypatch):
+    """Expired cached OAuth should not auto-enable x_search.
+
+    This is intentionally side-effect-free: the configurator must not hit the
+    network to discover whether a refresh token is still valid. The runtime
+    check_fn can refresh valid tokens when the user explicitly enables the
+    toolset.
+    """
+    monkeypatch.delenv("XAI_API_KEY", raising=False)
+    monkeypatch.setattr("tools.xai_http.get_env_value", lambda *_: None)
+    monkeypatch.setattr(
+        "hermes_cli.auth._read_xai_oauth_tokens",
+        lambda: {
+            "tokens": {
+                "access_token": "expired.jwt.token",
+                "refresh_token": "refresh-token",
+            }
+        },
+    )
+    monkeypatch.setattr(
+        "hermes_cli.auth._xai_access_token_is_expiring",
+        lambda access_token, skew_seconds=0: True,
+    )
+
+    assert _xai_credentials_present() is False
+    assert "x_search" not in _get_platform_tools({}, "cli")
 
 
 def test_get_platform_tools_x_search_respects_explicit_config(monkeypatch):
@@ -1066,7 +1095,7 @@ def test_reconfigure_provider_runs_post_setup_for_env_var_providers(
 
     provider = next(
         p
-        for p in TOOL_CATEGORIES["browser"]["providers"]
+        for p in _visible_providers(TOOL_CATEGORIES["browser"], {})
         if p["name"] == provider_name
     )
     _reconfigure_provider(provider, {})

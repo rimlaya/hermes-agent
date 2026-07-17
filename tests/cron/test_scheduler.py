@@ -1171,6 +1171,60 @@ class TestRunJobSessionPersistence:
         assert error is None
         assert final_response == "all good"
 
+    def test_run_job_soft_deadline_returns_continuation(self, tmp_path, monkeypatch):
+        """Cron should close before hosted hard timeouts and return progress."""
+        import time
+        import cron.scheduler as scheduler
+
+        job = {
+            "id": "long-job",
+            "name": "long dispatch",
+            "prompt": "do long work",
+        }
+        fake_db = MagicMock()
+
+        def _slow_run(_prompt):
+            time.sleep(0.2)
+            return {"final_response": "too late"}
+
+        monkeypatch.setenv("HERMES_CRON_SOFT_DEADLINE", "0.05")
+        monkeypatch.setenv("HERMES_CRON_TIMEOUT", "0")
+        monkeypatch.setattr(scheduler, "_CRON_RUN_POLL_INTERVAL_SECONDS", 0.01)
+
+        with patch("cron.scheduler._hermes_home", tmp_path), \
+             patch("cron.scheduler._resolve_origin", return_value=None), \
+             patch("dotenv.load_dotenv"), \
+             patch("hermes_state.SessionDB", return_value=fake_db), \
+             patch(
+                 "hermes_cli.runtime_provider.resolve_runtime_provider",
+                 return_value={
+                     "api_key": "***",
+                     "base_url": "https://example.invalid/v1",
+                     "provider": "openrouter",
+                     "api_mode": "chat_completions",
+                 },
+             ), \
+             patch("run_agent.AIAgent") as mock_agent_cls:
+            mock_agent = MagicMock()
+            mock_agent.run_conversation.side_effect = _slow_run
+            mock_agent.get_activity_summary.return_value = {
+                "last_activity_desc": "tool call",
+                "current_tool": "terminal",
+                "api_call_count": 2,
+                "max_iterations": 90,
+            }
+            mock_agent_cls.return_value = mock_agent
+
+            success, output, final_response, error = run_job(job)
+
+        assert success is True
+        assert error is None
+        assert "soft deadline" in final_response
+        assert "soft-deadline-continuation" in output
+        assert "tool call" in output
+        mock_agent.interrupt.assert_called_once()
+        mock_agent.close.assert_called_once()
+
     def test_tick_marks_empty_response_as_error(self, tmp_path):
         """When run_job returns success=True but final_response is empty,
         tick() should mark the job as error so last_status != 'ok'.
@@ -1799,6 +1853,14 @@ class TestBuildJobPromptSilentHint:
         result = _build_job_prompt(job)
         assert "do NOT use send_message" in result
         assert "automatically delivered" in result
+
+    def test_long_work_guidance_present(self):
+        """Cron hint tells agents to ack and checkpoint long dispatch work."""
+        job = {"prompt": "Process dispatch context"}
+        result = _build_job_prompt(job)
+        assert "LONG WORK" in result
+        assert "acknowledgement/receipt" in result
+        assert "durable task state" in result
 
     def test_delivery_guidance_precedes_user_prompt(self):
         """System guidance appears before the user's prompt text."""

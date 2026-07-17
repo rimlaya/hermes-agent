@@ -692,8 +692,15 @@ def run_conversation(
                     _injections.append(_plugin_user_context)
                 if _injections:
                     _base = api_msg.get("content", "")
+                    _extra = "\n\n".join(_injections)
                     if isinstance(_base, str):
-                        api_msg["content"] = _base + "\n\n" + "\n\n".join(_injections)
+                        api_msg["content"] = (_base + "\n\n" + _extra) if _base else _extra
+                    elif isinstance(_base, list):
+                        api_msg["content"] = _base + [{"type": "text", "text": _extra}]
+                    elif _base is None:
+                        api_msg["content"] = _extra
+                    else:
+                        api_msg["content"] = f"{_base}\n\n{_extra}"
 
             # For ALL assistant messages, pass reasoning back to the API
             # This ensures multi-turn reasoning context is preserved

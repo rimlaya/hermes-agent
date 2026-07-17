@@ -38,7 +38,7 @@ logger = logging.getLogger(__name__)
 # Model catalog — mirrors the ``openai`` plugin so the picker UX is identical.
 # ---------------------------------------------------------------------------
 
-API_MODEL = "gpt-image-2"
+API_MODEL = "gpt-image-1"
 
 _MODELS: Dict[str, Dict[str, Any]] = {
     "gpt-image-2-low": {

@@ -89,30 +89,26 @@ CONFIGURABLE_TOOLSETS = [
 # them through provider + model selection.
 #
 # X search is off by default for users without xAI credentials, but
-# auto-enables when SuperGrok OAuth tokens are stored OR XAI_API_KEY is
-# set — mirroring the HASS_TOKEN → homeassistant auto-enable below. The
-# `hermes tools` → X Search via Grok setup walks users through credential
-# setup. The tool's check_fn means the schema still won't appear to the
-# model if the credential later goes missing or expires.
+# auto-enables when a fresh SuperGrok OAuth access token is stored OR
+# XAI_API_KEY is set — mirroring the HASS_TOKEN → homeassistant auto-enable
+# below. The `hermes tools` → X Search via Grok setup walks users through
+# credential setup. The tool's check_fn means the schema still won't appear to
+# the model if the credential later goes missing or expires.
 _DEFAULT_OFF_TOOLSETS = {"moa", "homeassistant", "spotify", "discord", "discord_admin", "video", "video_gen", "x_search"}
 
 
 def _xai_credentials_present() -> bool:
-    """Cheap, side-effect-free check for usable xAI credentials.
+    """Cheap, side-effect-free check for xAI credentials.
 
     Used to auto-enable the ``x_search`` toolset when the user has either
     completed xAI Grok OAuth (SuperGrok subscription) or set
     ``XAI_API_KEY``. Does NOT hit the network — only inspects the local
-    auth store and environment. The tool's runtime ``check_fn`` still
-    gates schema registration if creds later expire or get revoked.
+    auth store and environment. Expired JWT-shaped OAuth access tokens are
+    treated as absent here because a revoked refresh token cannot recover
+    without user re-login. The tool's runtime ``check_fn`` still gates schema
+    registration and can refresh valid OAuth credentials when the toolset is
+    explicitly enabled.
     """
-    try:
-        from hermes_cli.auth import _read_xai_oauth_tokens
-
-        _read_xai_oauth_tokens()
-        return True
-    except Exception:
-        pass
     try:
         from tools.xai_http import get_env_value as _xai_get_env_value
 
@@ -120,7 +116,21 @@ def _xai_credentials_present() -> bool:
             return True
     except Exception:
         pass
-    return bool(str(os.environ.get("XAI_API_KEY") or "").strip())
+    if str(os.environ.get("XAI_API_KEY") or "").strip():
+        return True
+
+    try:
+        from hermes_cli.auth import _read_xai_oauth_tokens, _xai_access_token_is_expiring
+
+        data = _read_xai_oauth_tokens()
+        tokens = data.get("tokens") or {}
+        access_token = str(tokens.get("access_token") or "").strip()
+        if not access_token:
+            return False
+        return not _xai_access_token_is_expiring(access_token, skew_seconds=0)
+    except Exception:
+        pass
+    return False
 
 # Platform-scoped toolsets: only appear in the `hermes tools` checklist for
 # these platforms, and only resolve/save for these platforms.  A toolset

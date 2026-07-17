@@ -17,6 +17,7 @@ import os
 import shutil
 import subprocess
 import sys
+import time
 
 # fcntl is Unix-only; on Windows use msvcrt for file locking
 try:
@@ -128,6 +129,9 @@ from cron.jobs import get_due_jobs, mark_job_run, save_job_output, advance_next_
 # response with this marker to suppress delivery.  Output is still saved
 # locally for audit.
 SILENT_MARKER = "[SILENT]"
+_DEFAULT_CRON_TIMEOUT_SECONDS = 600.0
+_DEFAULT_CRON_SOFT_DEADLINE_SECONDS = 540.0
+_CRON_RUN_POLL_INTERVAL_SECONDS = 5.0
 
 # Backward-compatible module override used by tests and emergency monkeypatches.
 _hermes_home: Path | None = None
@@ -705,6 +709,85 @@ def _get_script_timeout() -> int:
     return _DEFAULT_SCRIPT_TIMEOUT
 
 
+def _parse_float_limit(
+    value,
+    *,
+    setting_name: str,
+    default_on_invalid: Optional[float],
+) -> Optional[float]:
+    try:
+        parsed = float(value)
+    except (ValueError, TypeError):
+        logger.warning(
+            "Invalid %s=%r; using %s",
+            setting_name,
+            value,
+            default_on_invalid,
+        )
+        return default_on_invalid
+    return parsed if parsed > 0 else None
+
+
+def _resolve_cron_runtime_limits(cfg: dict) -> tuple[Optional[float], Optional[float]]:
+    """Resolve inactivity and wall-clock soft deadline for cron agent runs.
+
+    ``HERMES_CRON_TIMEOUT`` remains the inactivity timeout. The soft deadline is
+    wall-clock based and defaults below hosted turn limits so scheduled jobs can
+    return progress instead of being killed externally.
+    """
+    raw_timeout = os.getenv("HERMES_CRON_TIMEOUT", "").strip()
+    if raw_timeout:
+        inactivity_limit = _parse_float_limit(
+            raw_timeout,
+            setting_name="HERMES_CRON_TIMEOUT",
+            default_on_invalid=_DEFAULT_CRON_TIMEOUT_SECONDS,
+        )
+    else:
+        inactivity_limit = _DEFAULT_CRON_TIMEOUT_SECONDS
+
+    cron_cfg = cfg.get("cron", {}) if isinstance(cfg, dict) else {}
+    raw_soft_deadline = os.getenv("HERMES_CRON_SOFT_DEADLINE", "").strip()
+    if raw_soft_deadline:
+        soft_deadline = _parse_float_limit(
+            raw_soft_deadline,
+            setting_name="HERMES_CRON_SOFT_DEADLINE",
+            default_on_invalid=_DEFAULT_CRON_SOFT_DEADLINE_SECONDS,
+        )
+    elif isinstance(cron_cfg, dict) and cron_cfg.get("agent_soft_deadline_seconds") is not None:
+        soft_deadline = _parse_float_limit(
+            cron_cfg.get("agent_soft_deadline_seconds"),
+            setting_name="cron.agent_soft_deadline_seconds",
+            default_on_invalid=_DEFAULT_CRON_SOFT_DEADLINE_SECONDS,
+        )
+    else:
+        soft_deadline = _DEFAULT_CRON_SOFT_DEADLINE_SECONDS
+
+    return inactivity_limit, soft_deadline
+
+
+def _format_soft_deadline_response(
+    job_name: str,
+    *,
+    elapsed_seconds: float,
+    soft_deadline: float,
+    activity: dict,
+) -> str:
+    last_desc = activity.get("last_activity_desc") or "unknown"
+    current_tool = activity.get("current_tool") or "none"
+    api_calls = activity.get("api_call_count", 0)
+    max_iterations = activity.get("max_iterations", 0)
+    return (
+        f"Cron job '{job_name}' reached its soft deadline before the hard "
+        f"turn timeout and was interrupted cleanly.\n\n"
+        f"- Elapsed: {int(elapsed_seconds)}s (soft deadline {int(soft_deadline)}s)\n"
+        f"- Last activity: {last_desc}\n"
+        f"- Current tool: {current_tool}\n"
+        f"- Iteration: {api_calls}/{max_iterations}\n\n"
+        "Partial work should be continued from the saved cron output, Maestro "
+        "task state, or the dispatch system's receipt/progress trail."
+    )
+
+
 def _run_job_script(script_path: str) -> tuple[bool, str]:
     """Execute a cron job's data-collection script and capture its output.
 
@@ -939,7 +1022,12 @@ def _build_job_prompt(job: dict, prerun_script: Optional[tuple] = None) -> str:
         "SILENT: If there is genuinely nothing new to report, respond "
         "with exactly \"[SILENT]\" (nothing else) to suppress delivery. "
         "Never combine [SILENT] with content — either report your "
-        "findings normally, or say [SILENT] and nothing more.]\n\n"
+        "findings normally, or say [SILENT] and nothing more. "
+        "LONG WORK: If the script context contains dispatched work that may "
+        "not finish in this cron turn, first send an acknowledgement/receipt "
+        "through the dispatch channel when one is explicitly provided, then "
+        "record progress in durable task state and finish this turn with a "
+        "concise progress/next-step response before the soft deadline.]\n\n"
     )
     prompt = cron_hint + prompt
     if skills is None:
@@ -1467,47 +1555,53 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
             session_db=_session_db,
         )
         
-        # Run the agent with an *inactivity*-based timeout: the job can run
-        # for hours if it's actively calling tools / receiving stream tokens,
-        # but a hung API call or stuck tool with no activity for the configured
-        # duration is caught and killed.  Default 600s (10 min inactivity);
-        # override via HERMES_CRON_TIMEOUT env var.  0 = unlimited.
+        # Run the agent with two limits:
+        #
+        # 1. An inactivity timeout: the job can run for hours if it's actively
+        #    calling tools / receiving stream tokens, but a hung API call or
+        #    stuck tool with no activity for the configured duration is caught
+        #    and killed. Default 600s; override via HERMES_CRON_TIMEOUT.
+        # 2. A wall-clock soft deadline: defaults to 540s so cron turns can
+        #    close with progress before hosted runtimes kill the whole turn at
+        #    600s. Override via HERMES_CRON_SOFT_DEADLINE or
+        #    cron.agent_soft_deadline_seconds. Set to 0 to disable.
         #
         # Uses the agent's built-in activity tracker (updated by
         # _touch_activity() on every tool call, API call, and stream delta).
-        _raw_cron_timeout = os.getenv("HERMES_CRON_TIMEOUT", "").strip()
-        if _raw_cron_timeout:
-            try:
-                _cron_timeout = float(_raw_cron_timeout)
-            except (ValueError, TypeError):
-                logger.warning(
-                    "Invalid HERMES_CRON_TIMEOUT=%r; using default 600s",
-                    _raw_cron_timeout,
-                )
-                _cron_timeout = 600.0
-        else:
-            _cron_timeout = 600.0
-        _cron_inactivity_limit = _cron_timeout if _cron_timeout > 0 else None
-        _POLL_INTERVAL = 5.0
+        _cron_inactivity_limit, _cron_soft_deadline = _resolve_cron_runtime_limits(_cfg)
         _cron_pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
         # Preserve scheduler-scoped ContextVar state (for example skill-declared
         # env passthrough registrations) when the cron run hops into the worker
         # thread used for inactivity timeout monitoring.
         _cron_context = contextvars.copy_context()
         _cron_future = _cron_pool.submit(_cron_context.run, agent.run_conversation, prompt)
+        _started_monotonic = time.monotonic()
         _inactivity_timeout = False
+        _soft_deadline_reached = False
         try:
-            if _cron_inactivity_limit is None:
+            if _cron_inactivity_limit is None and _cron_soft_deadline is None:
                 # Unlimited — just wait for the result.
                 result = _cron_future.result()
             else:
                 result = None
                 while True:
                     done, _ = concurrent.futures.wait(
-                        {_cron_future}, timeout=_POLL_INTERVAL,
+                        {_cron_future}, timeout=_CRON_RUN_POLL_INTERVAL_SECONDS,
                     )
                     if done:
                         result = _cron_future.result()
+                        break
+                    _elapsed_secs = time.monotonic() - _started_monotonic
+                    if (
+                        _cron_soft_deadline is not None
+                        and _elapsed_secs >= _cron_soft_deadline
+                    ):
+                        _soft_deadline_reached = True
+                        if hasattr(agent, "interrupt"):
+                            agent.interrupt(
+                                "Cron job reached its soft deadline; "
+                                "return progress and continue later."
+                            )
                         break
                     # Agent still running — check inactivity.
                     _idle_secs = 0.0
@@ -1517,7 +1611,10 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
                             _idle_secs = _act.get("seconds_since_activity", 0.0)
                         except Exception:
                             pass
-                    if _idle_secs >= _cron_inactivity_limit:
+                    if (
+                        _cron_inactivity_limit is not None
+                        and _idle_secs >= _cron_inactivity_limit
+                    ):
                         _inactivity_timeout = True
                         break
         except Exception:
@@ -1525,6 +1622,44 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
             raise
         finally:
             _cron_pool.shutdown(wait=False, cancel_futures=True)
+
+        if _soft_deadline_reached:
+            _activity = {}
+            if hasattr(agent, "get_activity_summary"):
+                try:
+                    _activity = agent.get_activity_summary()
+                except Exception:
+                    pass
+            _elapsed_secs = time.monotonic() - _started_monotonic
+            logger.warning(
+                "Job '%s' reached soft deadline %.0fs after %.0fs; "
+                "returning continuation response before hard timeout",
+                job_name,
+                _cron_soft_deadline,
+                _elapsed_secs,
+            )
+            final_response = _format_soft_deadline_response(
+                job_name,
+                elapsed_seconds=_elapsed_secs,
+                soft_deadline=_cron_soft_deadline or _elapsed_secs,
+                activity=_activity,
+            )
+            output = f"""# Cron Job: {job_name}
+
+**Job ID:** {job_id}
+**Run Time:** {_hermes_now().strftime('%Y-%m-%d %H:%M:%S')}
+**Schedule:** {job.get('schedule_display', 'N/A')}
+**Status:** soft-deadline-continuation
+
+## Prompt
+
+{prompt}
+
+## Response
+
+{final_response}
+"""
+            return True, output, final_response, None
 
         if _inactivity_timeout:
             # Build diagnostic summary from the agent's activity tracker.

@@ -3,7 +3,7 @@
 Verifies that the gateway detects pathologically large transcripts and
 triggers auto-compression before running the agent.  (#628)
 
-The hygiene system uses the SAME compression config as the agent:
+The hygiene system uses the same compression config as the agent:
   compression.threshold × model context length
 so CLI and messaging platforms behave identically.
 """
@@ -93,9 +93,9 @@ class TestSessionHygieneThresholds:
         history = _make_history(10)
         approx_tokens = estimate_messages_tokens_rough(history)
 
-        # For a 200k-context model at 85% threshold = 170k
+        # For a 200k-context model at 70% threshold = 140k
         context_length = 200_000
-        threshold_pct = 0.85
+        threshold_pct = 0.70
         compress_token_threshold = int(context_length * threshold_pct)
 
         needs_compress = approx_tokens >= compress_token_threshold
@@ -103,12 +103,12 @@ class TestSessionHygieneThresholds:
 
     def test_large_token_count_triggers(self):
         """High token count should trigger compression when exceeding model threshold."""
-        # Build a history that exceeds 85% of a 200k model (170k tokens)
-        history = _make_large_history_tokens(180_000)
+        # Build a history that exceeds 70% of a 200k model (140k tokens)
+        history = _make_large_history_tokens(150_000)
         approx_tokens = estimate_messages_tokens_rough(history)
 
         context_length = 200_000
-        threshold_pct = 0.85
+        threshold_pct = 0.70
         compress_token_threshold = int(context_length * threshold_pct)
 
         needs_compress = approx_tokens >= compress_token_threshold
@@ -120,9 +120,9 @@ class TestSessionHygieneThresholds:
         history = _make_history(250, content_size=10)
         approx_tokens = estimate_messages_tokens_rough(history)
 
-        # 200k model at 85% = 170k token threshold
+        # 200k model at 70% = 140k token threshold
         context_length = 200_000
-        threshold_pct = 0.85
+        threshold_pct = 0.70
         compress_token_threshold = int(context_length * threshold_pct)
 
         needs_compress = approx_tokens >= compress_token_threshold
@@ -143,7 +143,7 @@ class TestSessionHygieneThresholds:
         approx_tokens = estimate_messages_tokens_rough(history)
 
         context_length = 200_000
-        threshold_pct = 0.85
+        threshold_pct = 0.70
         compress_token_threshold = int(context_length * threshold_pct)
 
         # Token-based check only
@@ -152,12 +152,12 @@ class TestSessionHygieneThresholds:
 
     def test_threshold_scales_with_model(self):
         """Different models should have different compression thresholds."""
-        # 128k model at 85% = 108,800 tokens
-        small_model_threshold = int(128_000 * 0.85)
-        # 200k model at 85% = 170,000 tokens
-        large_model_threshold = int(200_000 * 0.85)
-        # 1M model at 85% = 850,000 tokens
-        huge_model_threshold = int(1_000_000 * 0.85)
+        # 128k model at 70% = 89,600 tokens
+        small_model_threshold = int(128_000 * 0.70)
+        # 200k model at 70% = 140,000 tokens
+        large_model_threshold = int(200_000 * 0.70)
+        # 1M model at 70% = 700,000 tokens
+        huge_model_threshold = int(1_000_000 * 0.70)
 
         # A session at ~120k tokens:
         history = _make_large_history_tokens(120_000)
@@ -219,31 +219,29 @@ class TestEstimatedTokenThreshold:
     """Verify that hygiene thresholds are always below the model's context
     limit — for both actual and estimated token counts.
 
-    Regression: a previous 1.4x multiplier on rough estimates pushed the
-    threshold to 85% * 1.4 = 119% of context, which exceeded the model's
-    limit and prevented hygiene from ever firing for ~200K models (GLM-5).
-    The fix removed the multiplier entirely — the 85% threshold already
-    provides ample headroom over the agent's 50% compressor.
+    Regression: a previous 1.4x multiplier on rough estimates could push the
+    effective threshold above the model's limit, which prevented hygiene from
+    ever firing for ~200K models (GLM-5). The fix removed the multiplier.
     """
 
     def test_threshold_below_context_for_200k_model(self):
         """Hygiene threshold must always be below model context."""
         context_length = 200_000
-        threshold = int(context_length * 0.85)
+        threshold = int(context_length * 0.70)
         assert threshold < context_length
 
     def test_threshold_below_context_for_128k_model(self):
         context_length = 128_000
-        threshold = int(context_length * 0.85)
+        threshold = int(context_length * 0.70)
         assert threshold < context_length
 
     def test_no_multiplier_means_same_threshold_for_estimated_and_actual(self):
         """Without the 1.4x, estimated and actual token paths use the same threshold."""
         context_length = 200_000
-        threshold_pct = 0.85
+        threshold_pct = 0.70
         threshold = int(context_length * threshold_pct)
-        # Both paths should use 170K — no inflation
-        assert threshold == 170_000
+        # Both paths should use 140K — no inflation
+        assert threshold == 140_000
 
     def test_warn_threshold_below_context(self):
         """Warn threshold (95%) must be below context length."""
@@ -254,16 +252,17 @@ class TestEstimatedTokenThreshold:
     def test_overestimate_fires_early_but_safely(self):
         """If rough estimate is 50% inflated, hygiene fires at ~57% actual usage.
 
-        That's between the agent's 50% threshold and the model's limit —
+        That's close to the configured compressor threshold and below the
+        model's limit —
         safe and harmless.
         """
         context_length = 200_000
-        threshold = int(context_length * 0.85)  # 170K
-        # If actual tokens = 113K, rough estimate = 113K * 1.5 = 170K
-        # Hygiene fires when estimate hits 170K, actual is ~113K = 57% of ctx
+        threshold = int(context_length * 0.70)  # 140K
+        # If actual tokens = 93K, rough estimate = 93K * 1.5 = 140K
+        # Hygiene fires when estimate hits 140K, actual is ~93K = 47% of ctx
         actual_when_fires = threshold / 1.5
-        assert actual_when_fires > context_length * 0.50, (
-            "Early fire should still be above agent's 50% threshold"
+        assert actual_when_fires > context_length * 0.40, (
+            "Early fire should not be far below the configured threshold"
         )
         assert actual_when_fires < context_length, (
             "Early fire must be well below model limit"
@@ -289,12 +288,12 @@ class TestTokenEstimation:
     def test_pathological_session_detected(self):
         """The reported pathological case: 648 messages, ~299K tokens.
 
-        With a 200k model at 85% threshold (170k), this should trigger.
+        With a 200k model at 70% threshold (140k), this should trigger.
         """
         history = _make_history(648, content_size=1800)
         tokens = estimate_messages_tokens_rough(history)
-        # Should be well above the 170K threshold for a 200k model
-        threshold = int(200_000 * 0.85)
+        # Should be well above the 140K threshold for a 200k model
+        threshold = int(200_000 * 0.70)
         assert tokens > threshold
 
 
