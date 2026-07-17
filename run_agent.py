@@ -3562,6 +3562,25 @@ class AIAgent:
         except Exception:
             pass
 
+    def close_codex_session(self) -> None:
+        """Close the lazily-spawned codex app-server session, if any.
+
+        ``_codex_session`` (see agent/codex_runtime.py) holds a codex
+        app-server subprocess, created per-AIAgent-instance on the first
+        codex turn.  Unlike terminal / browser / process state it is NOT
+        keyed by task_id, so a rebuilt agent for the same session cannot
+        inherit it — leaving it open on disposal orphans the subprocess
+        (the codex app-server leak).  Close it on every disposal path.
+        Idempotent.
+        """
+        session = getattr(self, "_codex_session", None)
+        if session is not None:
+            try:
+                session.close()
+            except Exception:
+                pass
+            self._codex_session = None
+
     def release_clients(self) -> None:
         """Release LLM client resources WITHOUT tearing down session tool state.
 
@@ -3608,6 +3627,12 @@ class AIAgent:
                 self.client = None
         except Exception:
             pass
+
+        # Close the codex app-server session too — like the OpenAI client, a
+        # rebuilt agent for the same task_id spawns a fresh one, so the old
+        # per-instance subprocess must be released here (it is not inherited)
+        # to prevent codex app-server orphan accumulation on cache eviction.
+        self.close_codex_session()
 
     def close(self) -> None:
         """Release all resources held by this agent instance.
@@ -3691,6 +3716,10 @@ class AIAgent:
                     session_db.end_session(session_id, "agent_close")
         except Exception:
             pass
+
+        # 8. Close the codex app-server session (per-instance subprocess;
+        # not inheritable across rebuilds, so must be released on teardown).
+        self.close_codex_session()
 
     def _hydrate_todo_store(self, history: List[Dict[str, Any]]) -> None:
         """
