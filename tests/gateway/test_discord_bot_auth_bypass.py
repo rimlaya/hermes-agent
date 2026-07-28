@@ -31,6 +31,8 @@ def _isolate_discord_env(monkeypatch):
         "DISCORD_ALLOWED_USERS",
         "DISCORD_ALLOWED_ROLES",
         "DISCORD_ALLOW_ALL_USERS",
+        "DISCORD_TRUSTED_AGENT_USER_IDS",
+        "DISCORD_YOMI_USER_IDS",
         "TELEGRAM_ALLOW_BOTS",
         "GATEWAY_ALLOW_ALL_USERS",
         "GATEWAY_ALLOWED_USERS",
@@ -131,6 +133,50 @@ def test_discord_bot_NOT_authorized_when_allow_bots_unset(monkeypatch):
 
     source = _make_discord_bot_source(bot_id="999888777")
     assert runner._is_user_authorized(source) is False
+
+
+def test_discord_trusted_agent_bot_authorized_when_allow_bots_unset(monkeypatch):
+    """An exact configured coordination bot bypasses the generic bot deny."""
+    runner = _make_bare_runner()
+    monkeypatch.delenv("DISCORD_ALLOW_BOTS", raising=False)
+    monkeypatch.setenv("DISCORD_ALLOWED_USERS", "100200300")
+    monkeypatch.setenv(
+        "DISCORD_TRUSTED_AGENT_USER_IDS",
+        "1493785569602441337,1500372119744413817",
+    )
+
+    for bot_id in ("1493785569602441337", "1500372119744413817"):
+        assert runner._is_user_authorized(
+            _make_discord_bot_source(bot_id=bot_id)
+        ) is True
+
+
+def test_discord_trusted_agent_bypass_is_exact_id_only(monkeypatch):
+    runner = _make_bare_runner()
+    monkeypatch.delenv("DISCORD_ALLOW_BOTS", raising=False)
+    monkeypatch.setenv("DISCORD_ALLOWED_USERS", "100200300")
+    monkeypatch.setenv(
+        "DISCORD_TRUSTED_AGENT_USER_IDS",
+        "1493785569602441337",
+    )
+
+    assert runner._is_user_authorized(
+        _make_discord_bot_source(bot_id="999888777")
+    ) is False
+
+
+def test_discord_yomi_legacy_bypass_still_works(monkeypatch):
+    runner = _make_bare_runner()
+    monkeypatch.delenv("DISCORD_ALLOW_BOTS", raising=False)
+    monkeypatch.setenv("DISCORD_ALLOWED_USERS", "100200300")
+    monkeypatch.setenv(
+        "DISCORD_YOMI_USER_IDS",
+        "1493785569602441337",
+    )
+
+    assert runner._is_user_authorized(
+        _make_discord_bot_source(bot_id="1493785569602441337")
+    ) is True
 
 
 def test_discord_human_still_checked_against_allowlist_when_bot_policy_set(monkeypatch):

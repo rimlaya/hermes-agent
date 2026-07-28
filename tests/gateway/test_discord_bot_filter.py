@@ -3,7 +3,7 @@
 import os
 import re
 import unittest
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 
 def _make_author(*, bot: bool = False, is_self: bool = False):
@@ -217,6 +217,99 @@ class TestDiscordBotFilter(unittest.TestCase):
         self.assertTrue(self._run_filter(msg, "All"))
         self.assertFalse(self._run_filter(msg, "NONE"))
         self.assertFalse(self._run_filter(msg, "None"))
+
+
+class TestTrustedAgentFilter(unittest.IsolatedAsyncioTestCase):
+    def test_configured_ids_override_legacy_defaults(self):
+        from plugins.platforms.discord.adapter import (
+            _discord_trusted_agent_channel_ids,
+            _discord_trusted_agent_user_ids,
+        )
+
+        with patch.dict(os.environ, {}, clear=True):
+            self.assertEqual(
+                _discord_trusted_agent_user_ids(
+                    {"trusted_agent_user_ids": ["<@123>", "456"]}
+                ),
+                {"123", "456"},
+            )
+            self.assertEqual(
+                _discord_trusted_agent_channel_ids(
+                    {"trusted_agent_channel_ids": ["<#789>"]}
+                ),
+                {"789"},
+            )
+
+    def test_trusted_agent_bypass_can_be_disabled(self):
+        from plugins.platforms.discord.adapter import (
+            _discord_trusted_agent_channel_ids,
+            _discord_trusted_agent_user_ids,
+        )
+
+        with patch.dict(
+            os.environ,
+            {
+                "DISCORD_TRUSTED_AGENT_USER_IDS": "none",
+                "DISCORD_TRUSTED_AGENT_CHANNEL_IDS": "none",
+            },
+            clear=True,
+        ):
+            self.assertEqual(_discord_trusted_agent_user_ids(), set())
+            self.assertEqual(_discord_trusted_agent_channel_ids(), set())
+
+    def test_yaml_config_bridges_trusted_ids_for_gateway_auth(self):
+        from plugins.platforms.discord.adapter import _apply_yaml_config
+
+        with patch.dict(os.environ, {}, clear=True):
+            seeded = _apply_yaml_config(
+                {},
+                {
+                    "trusted_agent_user_ids": ["123", "456"],
+                    "trusted_agent_channel_ids": ["789"],
+                    "trusted_agent_require_mention": True,
+                },
+            )
+
+            self.assertEqual(
+                os.environ["DISCORD_TRUSTED_AGENT_USER_IDS"], "123,456"
+            )
+            self.assertEqual(
+                os.environ["DISCORD_TRUSTED_AGENT_CHANNEL_IDS"], "789"
+            )
+            self.assertEqual(
+                os.environ["DISCORD_TRUSTED_AGENT_REQUIRE_MENTION"], "true"
+            )
+            self.assertEqual(
+                seeded["trusted_agent_user_ids"], ["123", "456"]
+            )
+
+    async def test_reply_to_own_message_is_detected(self):
+        from plugins.platforms.discord.adapter import DiscordAdapter
+
+        adapter = object.__new__(DiscordAdapter)
+        adapter._client = MagicMock()
+        adapter._client.user = _make_author(bot=True, is_self=True)
+        replied = MagicMock()
+        replied.author = adapter._client.user
+        message = _make_message(author=_make_author(bot=True))
+        message.reference = MagicMock(resolved=replied)
+
+        self.assertTrue(await adapter._reply_targets_client_user(message))
+
+    async def test_unresolved_reply_is_fetched_for_loop_detection(self):
+        from plugins.platforms.discord.adapter import DiscordAdapter
+
+        adapter = object.__new__(DiscordAdapter)
+        adapter._client = MagicMock()
+        adapter._client.user = _make_author(bot=True, is_self=True)
+        replied = MagicMock()
+        replied.author = adapter._client.user
+        message = _make_message(author=_make_author(bot=True))
+        message.reference = MagicMock(resolved=None, message_id=777)
+        message.channel.fetch_message = AsyncMock(return_value=replied)
+
+        self.assertTrue(await adapter._reply_targets_client_user(message))
+        message.channel.fetch_message.assert_awaited_once_with(777)
 
 
 if __name__ == "__main__":

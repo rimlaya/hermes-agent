@@ -370,6 +370,17 @@ class GatewayAuthorizationMixin:
             Platform.SLACK: "SLACK_ALLOW_BOTS",
         }
         if getattr(source, "is_bot", False):
+            if source.platform == Platform.DISCORD:
+                try:
+                    from plugins.platforms.discord.adapter import (
+                        _discord_trusted_agent_user_ids,
+                    )
+
+                    if str(source.user_id) in _discord_trusted_agent_user_ids():
+                        return True
+                except Exception:
+                    # Fall through to the generic fail-closed bot policy.
+                    pass
             allow_bots_var = platform_allow_bots_map.get(source.platform)
             if allow_bots_var and os.getenv(allow_bots_var, "none").lower().strip() in {"mentions", "all"}:
                 return True

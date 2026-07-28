@@ -309,7 +309,7 @@ class FakeDMChannel(_DMChannelBase):
         self.name = name
 
 
-def _make_message(*, content: str = "hi", reference=None):
+def _make_message(*, content: str = "hi", reference=None, channel=None):
     """Build a mock Discord message for _handle_message tests."""
     author = SimpleNamespace(id=42, display_name="TestUser", name="TestUser")
     return SimpleNamespace(
@@ -319,7 +319,7 @@ def _make_message(*, content: str = "hi", reference=None):
         attachments=[],
         reference=reference,
         created_at=datetime.now(timezone.utc),
-        channel=FakeDMChannel(),
+        channel=channel or FakeDMChannel(),
         author=author,
     )
 
@@ -358,6 +358,24 @@ class TestReplyToText:
         event = reply_text_adapter.handle_message.await_args.args[0]
         assert event.reply_to_message_id == "555"
         assert event.reply_to_text is None
+
+    @pytest.mark.asyncio
+    async def test_reference_without_resolved_fetches_original_message(
+        self, reply_text_adapter
+    ):
+        ref = SimpleNamespace(message_id=555, resolved=None)
+        channel = FakeDMChannel()
+        channel.fetch_message = AsyncMock(
+            return_value=SimpleNamespace(content="fetched original text")
+        )
+        message = _make_message(reference=ref, channel=channel)
+
+        await reply_text_adapter._handle_message(message)
+
+        channel.fetch_message.assert_awaited_once_with(555)
+        event = reply_text_adapter.handle_message.await_args.args[0]
+        assert event.reply_to_message_id == "555"
+        assert event.reply_to_text == "fetched original text"
 
     @pytest.mark.asyncio
     async def test_reference_with_resolved_content(self, reply_text_adapter):
