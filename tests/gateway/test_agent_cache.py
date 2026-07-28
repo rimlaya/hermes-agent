@@ -1437,6 +1437,40 @@ class TestAgentCacheIdleResume:
         # Post-release: client reference is dropped (memory freed).
         assert agent.client is None
 
+    def test_release_clients_closes_codex_app_server_session(self):
+        """Soft cache eviction must not orphan the per-agent Codex child."""
+        from unittest.mock import MagicMock
+
+        from run_agent import AIAgent
+
+        agent = object.__new__(AIAgent)
+        agent._active_children_lock = threading.Lock()
+        agent._active_children = set()
+        agent.client = None
+        session = MagicMock()
+        agent._codex_session = session
+
+        agent.release_clients()
+
+        session.close.assert_called_once_with()
+        assert agent._codex_session is None
+
+    def test_close_codex_session_is_idempotent(self):
+        """Hard disposal closes the child once and clears the owner slot."""
+        from unittest.mock import MagicMock
+
+        from run_agent import AIAgent
+
+        agent = object.__new__(AIAgent)
+        session = MagicMock()
+        agent._codex_session = session
+
+        agent.close_codex_session()
+        agent.close_codex_session()
+
+        session.close.assert_called_once_with()
+        assert agent._codex_session is None
+
     def test_close_vs_release_full_teardown_difference(self, monkeypatch):
         """close() tears down task state; release_clients() does not.
 
