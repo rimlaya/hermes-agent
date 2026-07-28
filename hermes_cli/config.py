@@ -8569,6 +8569,9 @@ _OPEN_DICT_TOP_LEVEL_KEYS = frozenset({
 # that DEFAULT_CONFIG doesn't enumerate (extras, per-channel overrides,
 # etc.). For these we validate the FIRST segment but accept anything below.
 _SCHEMA_DEFINED_DICT_KEYS = frozenset({
+    # Runtime-owned onboarding markers live below ``onboarding.seen`` and
+    # intentionally grow as new prompts are introduced.
+    "onboarding",
     # Platform configs — PlatformConfig dataclass + dynamic extras
     "discord", "telegram", "slack", "whatsapp", "signal", "mattermost",
     "matrix", "feishu", "wecom", "weixin", "bluebubbles", "qqbot", "yuanbao",

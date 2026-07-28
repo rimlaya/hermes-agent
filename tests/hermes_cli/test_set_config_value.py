@@ -590,6 +590,8 @@ class TestValidateConfigKey:
         "platforms.discord.enabled",
         "gateway.platforms.my_platform.extra.token",
         "approvals.mode",
+        "onboarding.seen.busy_input_prompt",
+        "onboarding.seen.profile_build_offered",
     ])
     def test_known_keys_pass(self, key):
         from hermes_cli.config import _validate_config_key
