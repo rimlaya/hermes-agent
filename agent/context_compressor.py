@@ -27,6 +27,7 @@ from typing import Any, Dict, List, Optional
 from agent.auxiliary_client import call_llm, _is_connection_error, aux_interrupt_protection
 from agent.context_engine import ContextEngine, sanitize_memory_context
 from agent.error_classifier import FailoverReason, classify_api_error
+from agent.failping import failping
 from agent.model_metadata import (
     MINIMUM_CONTEXT_LENGTH,
     get_model_context_length,
@@ -2127,6 +2128,12 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
         "timed out", "returned invalid JSON", "failed") that is interpolated
         into the warning log.
         """
+        failping(
+            logger,
+            component="compression_fallback",
+            signature=reason,
+            error=e,
+        )
         self._summary_model_fallen_back = True
         logger.warning(
             "Summary model '%s' %s (%s). "
@@ -2450,6 +2457,12 @@ This compaction should PRIORITISE preserving all information related to the focu
             # a main-model retry before any cooldown. (#11978, #11914)
             if isinstance(e, RuntimeError) and "no llm provider configured" in str(e).lower():
                 # No provider configured — long cooldown, unlikely to self-resolve
+                failping(
+                    logger,
+                    component="compression_summary",
+                    signature="no_provider",
+                    msg="no auxiliary LLM provider configured",
+                )
                 self._record_compression_failure_cooldown(
                     _SUMMARY_FAILURE_COOLDOWN_SECONDS,
                     "no auxiliary LLM provider configured",
@@ -2609,6 +2622,12 @@ This compaction should PRIORITISE preserving all information related to the focu
                 "Further summary attempts paused for %d seconds.",
                 e,
                 _transient_cooldown,
+            )
+            failping(
+                logger,
+                component="compression_summary",
+                signature=e.__class__.__name__,
+                error=e,
             )
             return None
 

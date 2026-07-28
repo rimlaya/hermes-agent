@@ -31,6 +31,7 @@ from agent.display import (
     redact_tool_args_for_display as _redact_tool_args_for_display,
     _detect_tool_failure,
 )
+from agent.failping import failping
 from agent.tool_guardrails import ToolGuardrailDecision
 from agent.tool_dispatch_helpers import (
     _is_destructive_command,
@@ -632,6 +633,12 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
                 return
             except Exception as tool_error:
                 result = f"Error executing tool '{function_name}': {tool_error}"
+                failping(
+                    logger,
+                    component=f"tool.{function_name}",
+                    signature=tool_error.__class__.__name__,
+                    error=tool_error,
+                )
                 logger.error("_invoke_tool raised for %s: %s", function_name, tool_error, exc_info=True)
             duration = time.time() - start
             is_error, _ = _detect_tool_failure(function_name, result)
@@ -1430,6 +1437,12 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                 _ce_result = function_result
             except Exception as tool_error:
                 function_result = json.dumps({"error": f"Context engine tool '{function_name}' failed: {tool_error}"})
+                failping(
+                    logger,
+                    component=f"tool.{function_name}",
+                    signature=tool_error.__class__.__name__,
+                    error=tool_error,
+                )
                 logger.error("context_engine.handle_tool_call raised for %s: %s", function_name, tool_error, exc_info=True)
             finally:
                 tool_duration = time.time() - tool_start_time
@@ -1464,6 +1477,12 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                 _mem_result = function_result
             except Exception as tool_error:
                 function_result = json.dumps({"error": f"Memory tool '{function_name}' failed: {tool_error}"})
+                failping(
+                    logger,
+                    component=f"tool.{function_name}",
+                    signature=tool_error.__class__.__name__,
+                    error=tool_error,
+                )
                 logger.error("memory_manager.handle_tool_call raised for %s: %s", function_name, tool_error, exc_info=True)
             finally:
                 tool_duration = time.time() - tool_start_time
@@ -1515,6 +1534,12 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                 raise
             except Exception as tool_error:
                 function_result = f"Error executing tool '{function_name}': {tool_error}"
+                failping(
+                    logger,
+                    component=f"tool.{function_name}",
+                    signature=tool_error.__class__.__name__,
+                    error=tool_error,
+                )
                 logger.error("handle_function_call raised for %s: %s", function_name, tool_error, exc_info=True)
             finally:
                 tool_duration = time.time() - tool_start_time
@@ -1555,6 +1580,12 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                 raise
             except Exception as tool_error:
                 function_result = f"Error executing tool '{function_name}': {tool_error}"
+                failping(
+                    logger,
+                    component=f"tool.{function_name}",
+                    signature=tool_error.__class__.__name__,
+                    error=tool_error,
+                )
                 logger.error("handle_function_call raised for %s: %s", function_name, tool_error, exc_info=True)
             tool_duration = time.time() - tool_start_time
 

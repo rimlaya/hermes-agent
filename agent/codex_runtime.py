@@ -23,6 +23,7 @@ import time
 from types import SimpleNamespace
 from typing import Any, Callable, Dict, List
 
+from agent.failping import failping
 from agent.stream_single_writer import claim_stream_writer, stream_writer_is_current
 
 logger = logging.getLogger(__name__)
@@ -1218,6 +1219,12 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
             event_stream = active_client.responses.create(**stream_kwargs)
         except (_httpx.RemoteProtocolError, _httpx.ReadTimeout, _httpx.ConnectError, ConnectionError) as exc:
             if attempt < max_stream_retries:
+                failping(
+                    logger,
+                    component="codex_responses_stream",
+                    signature=exc.__class__.__name__,
+                    error=exc,
+                )
                 logger.debug(
                     "Codex Responses stream connect failed (attempt %s/%s); retrying. %s error=%s",
                     attempt + 1, max_stream_retries + 1,

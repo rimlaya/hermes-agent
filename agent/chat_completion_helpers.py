@@ -30,6 +30,7 @@ from hermes_cli.timeouts import get_provider_request_timeout, get_provider_stale
 from hermes_constants import PARTIAL_STREAM_STUB_ID, FINISH_REASON_LENGTH
 from agent.error_classifier import FailoverReason
 from agent.errors import EmptyStreamError
+from agent.failping import failping
 from agent.turn_context import substitute_api_content
 from agent.gemini_native_adapter import is_native_gemini_base_url
 from agent.model_metadata import is_local_endpoint
@@ -3373,6 +3374,12 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                             mid_tool_call=True,
                             diag=request_client_holder.get("diag"),
                         )
+                        failping(
+                            logger,
+                            component="api_stream_mid_tool",
+                            signature=e.__class__.__name__,
+                            error=e,
+                        )
                         _cancel_current_stream_attempt("stream_mid_tool_retry_cleanup")
                         _close_request_client_once("stream_mid_tool_retry_cleanup")
                         # #67142: anthropic streams on a request-local client,
@@ -3434,6 +3441,12 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                                 max_attempts=_max_stream_retries + 1,
                                 mid_tool_call=False,
                                 diag=request_client_holder.get("diag"),
+                            )
+                            failping(
+                                logger,
+                                component="api_stream",
+                                signature=e.__class__.__name__,
+                                error=e,
                             )
                             # Close the stale request client before retry
                             _cancel_current_stream_attempt("stream_retry_cleanup")
