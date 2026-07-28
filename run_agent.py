@@ -480,7 +480,7 @@ class AIAgent:
         chat_type: str = None,
         thread_id: str = None,
         gateway_session_key: str = None,
-        skip_context_files: bool = False,
+        skip_context_files: bool = True,
         load_soul_identity: bool = False,
         skip_memory: bool = False,
         session_db=None,

@@ -333,7 +333,7 @@ def init_agent(
     chat_type: str = None,
     thread_id: str = None,
     gateway_session_key: str = None,
-    skip_context_files: bool = False,
+    skip_context_files: bool = True,
     load_soul_identity: bool = False,
     skip_memory: bool = False,
     session_db=None,
@@ -390,8 +390,10 @@ def init_agent(
             Used to inject platform-specific formatting hints into the system prompt.
         skip_context_files (bool): If True, skip auto-injection of project context files
             (SOUL.md, .hermes.md, AGENTS.md, CLAUDE.md, .cursorrules) from the cwd / HERMES_HOME
-            into the system prompt. Use this for batch processing and data generation to avoid
-            polluting trajectories with user-specific persona or project instructions.
+            into the system prompt. Defaults to True to avoid loading large project rules into
+            every session — e.g. for batch processing and data generation, to avoid polluting
+            trajectories with user-specific persona or project instructions. Pass False only for
+            explicit context-file runs.
         load_soul_identity (bool): If True, still use ~/.hermes/SOUL.md as the primary
             identity even when skip_context_files=True. Project context files from the cwd
             remain skipped.
