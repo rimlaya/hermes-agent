@@ -133,6 +133,7 @@ def test_make_agent_provider_routing_defaults_when_unset():
     fake_cfg = {"agent": {"system_prompt": ""}, "model": {"default": "glm-5"}}
 
     with (
+        patch.dict(os.environ, {"HERMES_IGNORE_RULES": ""}),
         patch("tui_gateway.server._load_cfg", return_value=fake_cfg),
         patch("tui_gateway.server._get_db", return_value=MagicMock()),
         patch("tui_gateway.server._load_reasoning_config", return_value=None),
@@ -155,6 +156,10 @@ def test_make_agent_provider_routing_defaults_when_unset():
         assert kwargs["provider_sort"] is None
         assert kwargs["provider_require_parameters"] is False
         assert kwargs["provider_data_collection"] is None
+        # Dashboard/TUI agents must not absorb repo-local persona files by
+        # default, even when HERMES_IGNORE_RULES is not explicitly set.
+        assert kwargs["skip_context_files"] is True
+        assert kwargs["skip_memory"] is False
 
 
 def test_make_agent_ignores_display_personality_without_system_prompt():

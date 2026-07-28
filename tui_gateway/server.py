@@ -5152,7 +5152,11 @@ def _make_agent(
         ephemeral_system_prompt=system_prompt or None,
         checkpoints_enabled=is_truthy_value(os.environ.get("HERMES_TUI_CHECKPOINTS")),
         pass_session_id=is_truthy_value(os.environ.get("HERMES_TUI_PASS_SESSION_ID")),
-        skip_context_files=is_truthy_value(os.environ.get("HERMES_IGNORE_RULES")),
+        # Dashboard/TUI sessions must not implicitly ingest repo-local persona
+        # files (AGENTS.md, SOUL.md, etc.). Keep parity with the messaging
+        # gateway and classic TUI safety default; HERMES_IGNORE_RULES still
+        # controls persistent-memory suppression independently below.
+        skip_context_files=True,
         skip_memory=is_truthy_value(os.environ.get("HERMES_IGNORE_RULES")),
         fallback_model=_load_fallback_model(),
         **_agent_cbs(sid),
