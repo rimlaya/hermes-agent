@@ -1,9 +1,14 @@
 """Tests for gateway/hooks.py — event hook system."""
 
+import asyncio
+import logging
+import subprocess
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
 
+from gateway.builtin_hooks import startup_inbox, startup_restart_finalize
 from gateway.hooks import HookRegistry
 
 
@@ -33,6 +38,47 @@ def _patch_no_builtins(reg):
 
 
 class TestDiscoverAndLoad:
+    def test_registers_builtin_startup_inbox_hook(self, tmp_path):
+        reg = HookRegistry()
+        with patch("gateway.hooks.HOOKS_DIR", tmp_path / "nonexistent"):
+            reg.discover_and_load()
+
+        assert any(
+            hook["name"] == "mia-startup-inbox-pickup"
+            and hook["events"] == ["gateway:startup"]
+            for hook in reg.loaded_hooks
+        )
+        assert any(
+            hook["name"] == "restart-finalize-notice"
+            and hook["events"] == ["gateway:startup"]
+            for hook in reg.loaded_hooks
+        )
+        assert reg._handlers["gateway:startup"] == [
+            startup_inbox.handle,
+            startup_restart_finalize.handle,
+        ]
+
+    def test_builtin_registration_is_idempotent(self, tmp_path):
+        reg = HookRegistry()
+        with patch("gateway.hooks.HOOKS_DIR", tmp_path / "nonexistent"):
+            reg.discover_and_load()
+            reg.discover_and_load()
+
+        hooks = [
+            hook for hook in reg.loaded_hooks
+            if hook["name"] == "mia-startup-inbox-pickup"
+        ]
+        assert len(hooks) == 1
+        finalize_hooks = [
+            hook for hook in reg.loaded_hooks
+            if hook["name"] == "restart-finalize-notice"
+        ]
+        assert len(finalize_hooks) == 1
+        assert reg._handlers["gateway:startup"] == [
+            startup_inbox.handle,
+            startup_restart_finalize.handle,
+        ]
+
     def test_loads_valid_hook(self, tmp_path):
         _create_hook(tmp_path, "my-hook", '["agent:start"]',
                       "def handle(event_type, context):\n    pass\n")
@@ -314,3 +360,65 @@ class TestEmitCollect:
         await reg.emit_collect("agent:start")  # no context arg
 
         assert captured == [("agent:start", {})]
+
+
+class TestStartupInboxBuiltin:
+    def test_logs_only_pending_count(self, tmp_path, monkeypatch, caplog):
+        calls = []
+
+        def _run(command, **kwargs):
+            calls.append((command, kwargs))
+            return subprocess.CompletedProcess(
+                command,
+                0,
+                stdout='[{"id":"msg-1","body":"secret body"}, {"id":"msg-2"}]',
+                stderr="",
+            )
+
+        monkeypatch.setenv("HERMES_STARTUP_INBOX_AGENT", "mia")
+        monkeypatch.setenv("HERMES_MAESTRO_VAULT", str(tmp_path))
+        monkeypatch.setenv("HERMES_MAESTRO_BIN", "/tmp/fake-maestro")
+        monkeypatch.setattr(startup_inbox.subprocess, "run", _run)
+
+        with caplog.at_level(logging.INFO, logger=startup_inbox.logger.name):
+            startup_inbox.handle("gateway:startup", {"platforms": ["discord"]})
+
+        assert calls == [(
+            [
+                "/tmp/fake-maestro",
+                "inbox",
+                "pickup-on-startup",
+                "--for",
+                "mia",
+                "--json",
+            ],
+            {
+                "cwd": str(tmp_path),
+                "text": True,
+                "capture_output": True,
+                "timeout": startup_inbox.MAESTRO_TIMEOUT_SECONDS,
+                "check": False,
+            },
+        )]
+        assert "found 2 pending message(s)" in caplog.text
+        assert "secret body" not in caplog.text
+
+    def test_non_startup_event_is_ignored(self, tmp_path, monkeypatch):
+        def _run(*_args, **_kwargs):
+            raise AssertionError("subprocess should not run")
+
+        monkeypatch.setenv("HERMES_STARTUP_INBOX_AGENT", "mia")
+        monkeypatch.setenv("HERMES_MAESTRO_VAULT", str(tmp_path))
+        monkeypatch.setattr(startup_inbox.subprocess, "run", _run)
+
+        startup_inbox.handle("agent:start", {})
+
+    def test_non_mia_gateway_is_ignored(self, tmp_path, monkeypatch):
+        def _run(*_args, **_kwargs):
+            raise AssertionError("subprocess should not run")
+
+        monkeypatch.setenv("HERMES_STARTUP_INBOX_AGENT", "sion")
+        monkeypatch.setenv("HERMES_MAESTRO_VAULT", str(tmp_path))
+        monkeypatch.setattr(startup_inbox.subprocess, "run", _run)
+
+        startup_inbox.handle("gateway:startup", {})

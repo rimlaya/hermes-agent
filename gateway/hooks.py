@@ -72,11 +72,49 @@ class HookRegistry:
     def _register_builtin_hooks(self) -> None:
         """Register built-in hooks that are always active.
 
-        Currently empty — no shipped built-in hooks. Kept as the extension
-        point for future always-on gateway hooks so they drop in without
-        re-plumbing discover_and_load().
+        Built-ins are Python handlers shipped in ``gateway.builtin_hooks``.
+        They are registered before user hooks so local hooks can observe the
+        same lifecycle events without replacing the default behavior.
         """
-        return
+        try:
+            from gateway.builtin_hooks import register_builtin_hooks
+
+            register_builtin_hooks(self)
+        except Exception as e:
+            print(f"[hooks] Error loading built-in hooks: {e}", flush=True)
+
+    def register_handler(
+        self,
+        *,
+        name: str,
+        events: List[str],
+        handler: Callable,
+        description: str = "",
+        path: str = "<builtin>",
+    ) -> None:
+        """Register a handler programmatically.
+
+        Used by built-in hooks and tests. ``discover_and_load`` remains the
+        filesystem manifest loader for user-installed hooks.
+        """
+        if not events:
+            return
+
+        for event in events:
+            handlers = self._handlers.setdefault(event, [])
+            if handler not in handlers:
+                handlers.append(handler)
+
+        if not any(
+            hook.get("name") == name and hook.get("path") == path
+            for hook in self._loaded_hooks
+        ):
+            self._loaded_hooks.append({
+                "name": name,
+                "description": description,
+                "events": list(events),
+                "path": path,
+            })
 
     def discover_and_load(self) -> None:
         """
@@ -143,16 +181,13 @@ class HookRegistry:
                     print(f"[hooks] Skipping {hook_name}: no 'handle' function found", flush=True)
                     continue
 
-                # Register the handler for each declared event
-                for event in events:
-                    self._handlers.setdefault(event, []).append(handle_fn)
-
-                self._loaded_hooks.append({
-                    "name": hook_name,
-                    "description": manifest.get("description", ""),
-                    "events": events,
-                    "path": str(hook_dir),
-                })
+                self.register_handler(
+                    name=hook_name,
+                    description=manifest.get("description", ""),
+                    events=events,
+                    handler=handle_fn,
+                    path=str(hook_dir),
+                )
 
                 print(f"[hooks] Loaded hook '{hook_name}' for events: {events}", flush=True)
 
