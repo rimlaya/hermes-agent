@@ -7886,6 +7886,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             logger.info("%s hook(s) loaded", hook_count)
         await self.hooks.emit("gateway:startup", {
             "platforms": [p.value for p in self.adapters.keys()],
+            "adapters": self.adapters,
+            "config": self.config,
         })
         
         if connected_count > 0:
@@ -10651,6 +10653,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if _cmd_def_inner and _cmd_def_inner.name == "agents":
                 return await self._handle_agents_command(event)
 
+            # The autonomy safety marker must remain controllable during a turn.
+            if _cmd_def_inner and _cmd_def_inner.name == "autonomy":
+                return await self._handle_autonomy_command(event)
+
             # /background must bypass the running-agent guard — it starts a
             # parallel task and must never interrupt the active conversation.
             # /btw is an alias of /background and resolves to the same canonical
@@ -11017,6 +11023,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         if canonical == "agents":
             return await self._handle_agents_command(event)
+
+        if canonical == "autonomy":
+            return await self._handle_autonomy_command(event)
 
         if canonical == "platform":
             return await self._handle_platform_command(event)

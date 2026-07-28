@@ -107,8 +107,8 @@ def build_top_level_parser():
         help=(
             "One-shot mode: send a single prompt and print ONLY the final "
             "response text to stdout. No banner, no spinner, no tool "
-            "previews, no session_id line. Tools, memory, rules, and "
-            "AGENTS.md in the CWD are loaded as normal; approvals are "
+            "previews, no session_id line. Tools and memory are loaded as "
+            "normal; project context files are skipped by default. Approvals are "
             "auto-bypassed. Intended for scripts / pipes."
         ),
     )
@@ -229,7 +229,7 @@ def build_top_level_parser():
         "--ignore-rules",
         action="store_true",
         default=False,
-        help="Skip auto-injection of AGENTS.md, SOUL.md, .cursorrules, memory, and preloaded skills",
+        help="Skip memory and preloaded user-config context; project context files are already skipped by default",
     )
     _inherited_flag(
         parser,
@@ -410,7 +410,7 @@ def build_top_level_parser():
         "--ignore-rules",
         action="store_true",
         default=argparse.SUPPRESS,
-        help="Skip auto-injection of AGENTS.md, SOUL.md, .cursorrules, memory, and preloaded skills. Combine with --ignore-user-config for a fully isolated run.",
+        help="Skip memory and preloaded user-config context. Combine with --ignore-user-config for a fully isolated run.",
     )
     _inherited_flag(
         chat_parser,

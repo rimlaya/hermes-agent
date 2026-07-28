@@ -298,6 +298,41 @@ class CLICommandsMixin:
 
         agent_running = getattr(self, "_agent_running", False)
         _cprint(f"  Agent: {'running' if agent_running else 'idle'}")
+        from agent.autonomy_control import format_autonomy_state, get_autonomy_state
+        _cprint(f"  Autonomy: {format_autonomy_state(get_autonomy_state())}")
+
+    def _handle_autonomy_command(self, cmd: str):
+        """Handle /autonomy — record and report the user's autonomy state."""
+        from cli import _cprint
+        from agent.autonomy_control import (
+            clear_autonomy,
+            format_autonomy_state,
+            get_autonomy_state,
+            pause_autonomy,
+            resume_autonomy,
+        )
+
+        parts = cmd.strip().split(maxsplit=2)
+        action = parts[1].lower() if len(parts) > 1 else "status"
+        reason = parts[2].strip() if len(parts) > 2 else ""
+
+        if action == "status":
+            _cprint(f"  Autonomy: {format_autonomy_state(get_autonomy_state())}")
+            return
+        if action == "pause":
+            state = pause_autonomy(reason)
+            _cprint(f"  Autonomy marked paused: {state.reason or 'paused'}")
+            _cprint("  New background work is still allowed; this is a visibility marker.")
+            return
+        if action == "resume":
+            resume_autonomy()
+            _cprint("  Autonomy resumed.")
+            return
+        if action == "clear":
+            clear_autonomy()
+            _cprint("  Autonomy marker cleared.")
+            return
+        _cprint("  Usage: /autonomy [status|pause|resume|clear] [reason]")
 
     def _handle_journey_command(self, cmd_original: str) -> None:
         """Handle /journey — the learning timeline (see `hermes journey`).

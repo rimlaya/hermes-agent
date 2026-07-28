@@ -1022,6 +1022,7 @@ class GatewaySlashCommandsMixin:
             t("gateway.agents.header"),
             "",
             t("gateway.agents.active_agents", count=len(agent_rows)),
+            f"Autonomy: `{self._format_autonomy_state()}`",
         ]
 
         if agent_rows:
@@ -1066,6 +1067,41 @@ class GatewaySlashCommandsMixin:
             lines.append(t("gateway.agents.none"))
 
         return "\n".join(lines)
+
+    @staticmethod
+    def _format_autonomy_state() -> str:
+        from agent.autonomy_control import format_autonomy_state, get_autonomy_state
+        return format_autonomy_state(get_autonomy_state())
+
+    async def _handle_autonomy_command(self, event: MessageEvent) -> str:
+        """Handle /autonomy — record and report the user's autonomy state."""
+        from agent.autonomy_control import (
+            clear_autonomy,
+            format_autonomy_state,
+            get_autonomy_state,
+            pause_autonomy,
+            resume_autonomy,
+        )
+
+        parts = event.get_command_args().strip().split(maxsplit=1)
+        action = parts[0].lower() if parts else "status"
+        reason = parts[1].strip() if len(parts) > 1 else ""
+
+        if action == "status":
+            return f"Autonomy: `{format_autonomy_state(get_autonomy_state())}`"
+        if action == "pause":
+            state = pause_autonomy(reason)
+            return (
+                f"Autonomy marked paused: `{state.reason or 'paused'}`\n"
+                "New background work is still allowed; this is a visibility marker."
+            )
+        if action == "resume":
+            resume_autonomy()
+            return "Autonomy resumed."
+        if action == "clear":
+            clear_autonomy()
+            return "Autonomy marker cleared."
+        return "Usage: /autonomy [status|pause|resume|clear] [reason]"
 
     async def _handle_stop_command(self, event: MessageEvent) -> Union[str, EphemeralReply]:
         """Handle /stop command - interrupt a running agent.

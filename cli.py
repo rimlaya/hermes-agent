@@ -9086,6 +9086,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             self._handle_stop_command()
         elif canonical == "agents":
             self._handle_agents_command()
+        elif canonical == "autonomy":
+            self._handle_autonomy_command(cmd_original)
         elif canonical == "journey":
             self._handle_journey_command(cmd_original)
         elif canonical == "background":
