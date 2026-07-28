@@ -2773,8 +2773,24 @@ class GatewaySlashCommandsMixin:
         if not prompt:
             return t("gateway.background.usage")
 
+        from agent.autonomy_control import (
+            format_autonomy_state,
+            get_autonomy_state,
+            log_autonomy_event,
+        )
+
         source = event.source
         task_id = f"bg_{datetime.now().strftime('%H%M%S')}_{os.urandom(3).hex()}"
+        log_autonomy_event(
+            "background_start",
+            surface="gateway",
+            task_id=task_id,
+            objective=prompt,
+            autonomy_state=format_autonomy_state(get_autonomy_state()),
+            stop_condition="/stop",
+            session_id=task_id,
+            source=f"{source.platform.value}:{source.chat_id}",
+        )
 
         event_message_id = self._reply_anchor_for_event(event)
 
