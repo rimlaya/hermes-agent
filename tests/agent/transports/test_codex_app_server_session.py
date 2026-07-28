@@ -18,7 +18,6 @@ from agent.transports.codex_app_server_session import (
     CodexAppServerSession,
     _ServerRequestRouting,
     _approval_choice_to_codex_decision,
-    _coerce_turn_input_text,
 )
 
 
@@ -127,15 +126,6 @@ class TestApprovalChoiceMapping:
         assert _approval_choice_to_codex_decision(choice) == expected
 
 
-class TestTurnInputCoercion:
-    def test_list_content_keeps_text_and_marks_images(self):
-        text = _coerce_turn_input_text([
-            {"type": "text", "text": "caption"},
-            {"type": "image_url", "image_url": {"url": "data:image/png;base64,abc"}},
-        ])
-        assert text == "caption\n\n[image attached]"
-
-
 # ---- lifecycle ----
 
 class TestLifecycle:
@@ -230,7 +220,9 @@ class TestRunTurn:
         assert r.token_usage_total["totalTokens"] == 500
         assert r.model_context_window == 200000
 
-    def test_rich_content_turn_is_collapsed_to_text_payload(self):
+    def test_rich_content_turn_passes_through_structured_user_input(self):
+        import base64
+
         client = FakeClient()
         client.queue_notification(
             "turn/completed",
@@ -238,6 +230,7 @@ class TestRunTurn:
             turn={"id": "tu1", "status": "completed", "error": None},
         )
         s = make_session(client)
+        image_url = "data:image/png;base64," + base64.b64encode(b"png-data").decode("ascii")
         r = s.run_turn(
             [
                 {
@@ -246,7 +239,7 @@ class TestRunTurn:
                 },
                 {
                     "type": "image_url",
-                    "image_url": {"url": "data:image/png;base64,abc"},
+                    "image_url": {"url": image_url},
                 },
             ],
             turn_timeout=2.0,
@@ -254,10 +247,12 @@ class TestRunTurn:
         assert r.error is None
         method, params = next(req for req in client.requests if req[0] == "turn/start")
         assert method == "turn/start"
-        text = params["input"][0]["text"]
-        assert isinstance(text, str)
-        assert "[Image attached at: /tmp/a.png]" in text
-        assert "[image attached]" in text
+        assert params["input"][0] == {
+            "type": "text",
+            "text": "look at this\n\n[Image attached at: /tmp/a.png]",
+        }
+        assert params["input"][1]["type"] == "localImage"
+        assert params["input"][1]["path"].endswith(".png")
 
     def test_tool_iteration_counter_ticks(self):
         client = FakeClient()
