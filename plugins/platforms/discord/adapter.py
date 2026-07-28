@@ -96,9 +96,9 @@ _DISCORD_NONCONVERSATIONAL_HISTORY_MESSAGE_PATTERNS = (
 )
 # Mia coordination fallbacks. Deployments should override these with
 # ``discord.trusted_agent_*`` config; the user-id fallback includes the
-# legacy Yomi identity kept for compatibility with the existing fork.
+# current Yomi-Admin identity plus Mia's coordination identity.
 _DEFAULT_TRUSTED_AGENT_USER_IDS = frozenset({
-    "1493785569602441337",
+    "1495044373904359596",
     "1500372119744413817",
 })
 _DEFAULT_TRUSTED_AGENT_CHANNEL_IDS = frozenset({

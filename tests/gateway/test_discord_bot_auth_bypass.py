@@ -151,6 +151,19 @@ def test_discord_trusted_agent_bot_authorized_when_allow_bots_unset(monkeypatch)
         ) is True
 
 
+def test_discord_default_trusted_agents_use_current_yomi_admin(monkeypatch):
+    runner = _make_bare_runner()
+    monkeypatch.delenv("DISCORD_ALLOW_BOTS", raising=False)
+    monkeypatch.setenv("DISCORD_ALLOWED_USERS", "100200300")
+
+    assert runner._is_user_authorized(
+        _make_discord_bot_source(bot_id="1495044373904359596")
+    ) is True
+    assert runner._is_user_authorized(
+        _make_discord_bot_source(bot_id="1493785569602441337")
+    ) is False
+
+
 def test_discord_trusted_agent_bypass_is_exact_id_only(monkeypatch):
     runner = _make_bare_runner()
     monkeypatch.delenv("DISCORD_ALLOW_BOTS", raising=False)
