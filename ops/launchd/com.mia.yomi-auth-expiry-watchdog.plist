@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.mia.yomi-auth-expiry-watchdog</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string>
+    <string>/Users/miyaihisataka/.yomi/scripts/yomi-auth-expiry-watchdog.sh</string>
+  </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>HOME</key>
+    <string>/Users/miyaihisataka</string>
+    <key>PATH</key>
+    <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+  </dict>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>StartInterval</key>
+  <integer>60</integer>
+  <key>StandardOutPath</key>
+  <string>/Users/miyaihisataka/.yomi/logs/yomi-auth-expiry-watchdog.launchd.out.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/miyaihisataka/.yomi/logs/yomi-auth-expiry-watchdog.launchd.err.log</string>
+</dict>
+</plist>
