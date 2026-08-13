@@ -11,6 +11,8 @@ TARGET_PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
 STAMP=$(date -u '+%Y%m%dT%H%M%SZ')
 BACKUP_DIR="$HOME/.yomi/backups/yomi-auth-expiry-watchdog-$STAMP"
 WAS_LOADED=0
+HAD_SCRIPT=0
+HAD_PLIST=0
 
 mkdir -p "$HOME/.yomi/scripts" "$HOME/.yomi/logs" "$HOME/.yomi/state" "$HOME/Library/LaunchAgents" "$BACKUP_DIR"
 plutil -lint "$SOURCE_PLIST" >/dev/null
@@ -19,17 +21,21 @@ plutil -lint "$SOURCE_PLIST" >/dev/null
 if launchctl print "$DOMAIN/$LABEL" >/dev/null 2>&1; then
   WAS_LOADED=1
 fi
-if [ -e "$TARGET_SCRIPT" ]; then cp -p "$TARGET_SCRIPT" "$BACKUP_DIR/"; fi
-if [ -e "$TARGET_PLIST" ]; then cp -p "$TARGET_PLIST" "$BACKUP_DIR/"; fi
+if [ -e "$TARGET_SCRIPT" ]; then HAD_SCRIPT=1; cp -p "$TARGET_SCRIPT" "$BACKUP_DIR/"; fi
+if [ -e "$TARGET_PLIST" ]; then HAD_PLIST=1; cp -p "$TARGET_PLIST" "$BACKUP_DIR/"; fi
 
 rollback() {
   launchctl bootout "$DOMAIN/$LABEL" >/dev/null 2>&1 || true
   if [ -f "$BACKUP_DIR/$(basename "$TARGET_SCRIPT")" ]; then
     cp -p "$BACKUP_DIR/$(basename "$TARGET_SCRIPT")" "$TARGET_SCRIPT"
+  elif [ "$HAD_SCRIPT" = 0 ]; then
+    rm -f "$TARGET_SCRIPT"
   fi
   if [ -f "$BACKUP_DIR/$(basename "$TARGET_PLIST")" ]; then
     cp -p "$BACKUP_DIR/$(basename "$TARGET_PLIST")" "$TARGET_PLIST"
     if [ "$WAS_LOADED" = 1 ]; then launchctl bootstrap "$DOMAIN" "$TARGET_PLIST" >/dev/null 2>&1 || true; fi
+  elif [ "$HAD_PLIST" = 0 ]; then
+    rm -f "$TARGET_PLIST"
   fi
 }
 trap rollback HUP INT TERM
